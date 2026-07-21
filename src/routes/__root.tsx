@@ -77,14 +77,18 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
+      { title: "Free Throw Miss Simulator" },
+      { name: "description", content: "Physics-based basketball intentional miss rebound analyzer." },
       { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { property: "og:title", content: "Free Throw Miss Simulator" },
+      { property: "og:description", content: "Physics-based basketball intentional miss rebound analyzer." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
       { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:title", content: "Free Throw Miss Simulator" },
+      { name: "twitter:description", content: "Physics-based basketball intentional miss rebound analyzer." },
+      { property: "og:image", content: "https://storage.googleapis.com/gpt-engineer-file-uploads/attachments/og-images/0bc16df3-7356-4c0a-80d5-7dd1726c171a" },
+      { name: "twitter:image", content: "https://storage.googleapis.com/gpt-engineer-file-uploads/attachments/og-images/0bc16df3-7356-4c0a-80d5-7dd1726c171a" },
     ],
     links: [
       {

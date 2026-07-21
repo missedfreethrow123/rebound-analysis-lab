@@ -14,7 +14,7 @@ export const Route = createFileRoute("/")({
       { title: "Free Throw Miss Simulator" },
       { name: "description", content: "Physics-based basketball intentional miss rebound analyzer." },
       { property: "og:title", content: "Free Throw Miss Simulator" },
-      { property: "og:description", content: "Analyze rebound landing patterns from intentionally missed free throws." },
+      { property: "og:description", content: "Physics-based basketball intentional miss rebound analyzer." },
     ],
   }),
   component: Index,
