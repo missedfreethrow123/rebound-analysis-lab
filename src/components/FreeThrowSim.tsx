@@ -24,7 +24,7 @@ export type SimControls = {
 // Court/hoop constants (meters)
 const RIM_Y = 3.05;
 const RIM_RADIUS = 0.2286; // 45.72cm diameter
-const RIM_TUBE = 0.01;
+const RIM_TUBE = 0.02;
 const RIM_Z = 0; // rim center z
 const BACKBOARD_Z = 0.15; // back face of rim to backboard
 const BACKBOARD_W = 1.8;
