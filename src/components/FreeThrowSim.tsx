@@ -24,7 +24,7 @@ export type SimControls = {
 // Court/hoop constants (meters)
 const RIM_Y = 3.05;
 const RIM_RADIUS = 0.2286; // 45.72cm diameter
-const RIM_TUBE = 0.01;
+const RIM_TUBE = 0.02;
 const RIM_Z = 0; // rim center z
 const BACKBOARD_Z = 0.15; // back face of rim to backboard
 const BACKBOARD_W = 1.8;
@@ -203,9 +203,9 @@ export default function FreeThrowSim({
     scene.background = new THREE.Color(0x0a0a12);
     scene.fog = new THREE.Fog(0x0a0a12, 15, 40);
 
-    const camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 100);
-    camera.position.set(0, 2.6, -6);
-    camera.lookAt(0, 2.5, 0);
+    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 100);
+    camera.position.set(0, 3.2, -8.5);
+    camera.lookAt(0, 2.2, 0);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -279,12 +279,22 @@ export default function FreeThrowSim({
     scene.add(new THREE.Line(sqGeo, new THREE.LineBasicMaterial({ color: 0xffffff })));
 
     // Rim (torus)
-    const rimGeo = new THREE.TorusGeometry(RIM_RADIUS, RIM_TUBE, 12, 40);
-    const rimMat = new THREE.MeshStandardMaterial({ color: 0xff6b1a, roughness: 0.4, metalness: 0.6 });
+    const rimGeo = new THREE.TorusGeometry(RIM_RADIUS, RIM_TUBE, 16, 48);
+    const rimMat = new THREE.MeshStandardMaterial({
+      color: 0xff5500,
+      emissive: 0xff2200,
+      emissiveIntensity: 0.6,
+      roughness: 0.3,
+      metalness: 0.7,
+    });
     const rim = new THREE.Mesh(rimGeo, rimMat);
     rim.rotation.x = Math.PI / 2;
     rim.position.set(0, RIM_Y, RIM_Z);
     scene.add(rim);
+    // Rim glow spotlight to make it pop
+    const rimLight = new THREE.PointLight(0xff6a1a, 1.5, 4, 2);
+    rimLight.position.set(0, RIM_Y + 0.1, RIM_Z);
+    scene.add(rimLight);
 
     // Net (simple lines)
     const netGroup = new THREE.Group();
