@@ -219,8 +219,8 @@ export default function FreeThrowSim({
     mount.appendChild(renderer.domElement);
 
     // Lights: soft ambient + big hemisphere for arena feel
-    scene.add(new THREE.AmbientLight(0xffffff, 0.28));
-    scene.add(new THREE.HemisphereLight(0xbfd8ff, 0.06, 0x101018));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.15));
+    scene.add(new THREE.HemisphereLight(0xbfd8ff, 0.05, 0x101018));
 
     // Overhead floodlight row (8 rigs across the ceiling)
     const rigCount = 9;
@@ -228,7 +228,7 @@ export default function FreeThrowSim({
       const t = (i / (rigCount - 1)) * 2 - 1; // -1..1
       const sx = t * 8;
       const sz = -2 + (i % 2 === 0 ? -1.5 : 1.5);
-      const sl = new THREE.SpotLight(0xffffff, 3.2, 45, Math.PI / 6, 0.35, 1.1);
+      const sl = new THREE.SpotLight(0xffffff, 1.1, 45, Math.PI / 6, 0.35, 1.1);
       sl.position.set(sx, 13, sz);
       sl.target.position.set(sx * 0.25, 0, sz * 0.4);
       sl.castShadow = i === 3 || i === 5;
@@ -260,7 +260,7 @@ export default function FreeThrowSim({
     }
 
     // Court key spotlight highlighting hoop
-    const keySpot = new THREE.SpotLight(0xfff2d0, 2.4, 30, Math.PI / 5, 0.4, 1.2);
+    const keySpot = new THREE.SpotLight(0xfff2d0, 0.9, 30, Math.PI / 5, 0.4, 1.2);
     keySpot.position.set(0, 10, -2);
     keySpot.target.position.set(0, RIM_Y, 0);
     keySpot.castShadow = true;
@@ -272,17 +272,21 @@ export default function FreeThrowSim({
     const plankCanvas = document.createElement("canvas");
     plankCanvas.width = 512; plankCanvas.height = 512;
     const pctx = plankCanvas.getContext("2d")!;
+    // Warm honey/amber base with horizontal plank grain
     const grd = pctx.createLinearGradient(0, 0, 0, 512);
-    grd.addColorStop(0, "#d99a5b");
-    grd.addColorStop(1, "#b87434");
+    grd.addColorStop(0, "#dcac6a");
+    grd.addColorStop(0.5, "#d4a359");
+    grd.addColorStop(1, "#b8863f");
     pctx.fillStyle = grd; pctx.fillRect(0, 0, 512, 512);
-    for (let i = 0; i < 512; i += 32) {
-      pctx.fillStyle = `rgba(60,30,10,${0.25 + Math.random() * 0.2})`;
-      pctx.fillRect(0, i, 512, 1);
+    // horizontal plank separators
+    for (let i = 0; i < 512; i += 48) {
+      pctx.fillStyle = "rgba(50,25,8,0.55)";
+      pctx.fillRect(0, i, 512, 2);
     }
-    for (let i = 0; i < 400; i++) {
-      pctx.fillStyle = `rgba(80,40,15,${Math.random() * 0.15})`;
-      pctx.fillRect(Math.random() * 512, Math.random() * 512, 1 + Math.random() * 2, 1);
+    // subtle grain streaks
+    for (let i = 0; i < 900; i++) {
+      pctx.fillStyle = `rgba(90,55,20,${Math.random() * 0.18})`;
+      pctx.fillRect(Math.random() * 512, Math.random() * 512, 2 + Math.random() * 3, 1);
     }
     const floorTex = new THREE.CanvasTexture(plankCanvas);
     floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
@@ -291,8 +295,9 @@ export default function FreeThrowSim({
     const floorGeo = new THREE.PlaneGeometry(40, 40);
     const floorMat = new THREE.MeshStandardMaterial({
       map: floorTex,
-      roughness: 0.35,
-      metalness: 0.05,
+      color: 0xd4a359,
+      roughness: 0.3,
+      metalness: 0.1,
     });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
@@ -301,7 +306,7 @@ export default function FreeThrowSim({
 
     // Paint (vibrant cyan-blue key)
     const keyGeo = new THREE.PlaneGeometry(4.9, 5.8);
-    const keyMat = new THREE.MeshStandardMaterial({ color: 0x0aa3d9, roughness: 0.55, metalness: 0.05 });
+    const keyMat = new THREE.MeshStandardMaterial({ color: 0x0088ff, roughness: 0.5, metalness: 0.1 });
     const key = new THREE.Mesh(keyGeo, keyMat);
     key.rotation.x = -Math.PI / 2;
     key.position.set(0, 0.002, -2.0);
@@ -429,9 +434,9 @@ export default function FreeThrowSim({
     // Rim (bright orange)
     const rimGeo = new THREE.TorusGeometry(RIM_RADIUS, RIM_TUBE, 20, 64);
     const rimMat = new THREE.MeshStandardMaterial({
-      color: 0xff6a1a,
-      emissive: 0xff4400,
-      emissiveIntensity: 0.55,
+      color: 0xff5500,
+      emissive: 0xff3300,
+      emissiveIntensity: 0.6,
       roughness: 0.35,
       metalness: 0.8,
     });
@@ -440,7 +445,7 @@ export default function FreeThrowSim({
     rim.position.set(0, RIM_Y, RIM_Z);
     scene.add(rim);
     // Rim glow spotlight to make it pop
-    const rimLight = new THREE.PointLight(0xff6a1a, 1.5, 4, 2);
+    const rimLight = new THREE.PointLight(0xff5500, 1.2, 4, 2);
     rimLight.position.set(0, RIM_Y + 0.1, RIM_Z);
     scene.add(rimLight);
 
@@ -456,7 +461,7 @@ export default function FreeThrowSim({
     scene.add(netGroup);
 
     // Support: yellow cylindrical arm & neck, royal-blue tapered padded base
-    const yellowMat = new THREE.MeshStandardMaterial({ color: 0xf6c518, roughness: 0.45, metalness: 0.35 });
+    const yellowMat = new THREE.MeshStandardMaterial({ color: 0xffcc00, roughness: 0.45, metalness: 0.35 });
     const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.7, 20), yellowMat);
     arm.rotation.x = Math.PI / 2;
     arm.position.set(0, BACKBOARD_Y, BACKBOARD_Z + 0.4);
@@ -465,7 +470,7 @@ export default function FreeThrowSim({
     neck.position.set(0, (BACKBOARD_Y - 0.6) / 2 + 0.6, BACKBOARD_Z + 0.75);
     scene.add(neck);
     // Royal-blue padded base (tapered inward at top)
-    const padMat = new THREE.MeshStandardMaterial({ color: 0x1a3fb5, roughness: 0.7, metalness: 0.05 });
+    const padMat = new THREE.MeshStandardMaterial({ color: 0x0055d4, roughness: 0.7, metalness: 0.05 });
     const baseTop = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.75, 0.6, 24), padMat);
     baseTop.position.set(0, 0.6, BACKBOARD_Z + 0.9);
     scene.add(baseTop);
