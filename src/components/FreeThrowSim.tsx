@@ -673,6 +673,8 @@ export default function FreeThrowSim({
           }, 800);
         }
       }
+      const tick = (stateRef.current as any).__ledTick;
+      if (tick) tick();
       renderer.render(scene, camera);
       raf = requestAnimationFrame(animate);
     };
