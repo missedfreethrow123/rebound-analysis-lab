@@ -200,92 +200,240 @@ export default function FreeThrowSim({
     const height = mount.clientHeight;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0a12);
-    scene.fog = new THREE.Fog(0x0a0a12, 15, 40);
+    scene.background = new THREE.Color(0x05060a);
+    scene.fog = new THREE.Fog(0x05060a, 22, 55);
 
-    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 100);
-    camera.position.set(0, 3.2, -8.5);
-    camera.lookAt(0, 2.2, 0);
+    // Symmetrical low-angle over-the-shoulder camera behind the FT line arc
+    const camera = new THREE.PerspectiveCamera(68, width / height, 0.1, 200);
+    camera.position.set(0, 2.4, FT_LINE_Z - 4.2);
+    camera.lookAt(0, 2.6, 0);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(width, height);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     mount.appendChild(renderer.domElement);
 
-    // Lights
-    const ambient = new THREE.AmbientLight(0xffffff, 0.35);
-    scene.add(ambient);
-    const spot = new THREE.SpotLight(0xffffff, 2.5, 40, Math.PI / 4, 0.4, 1);
-    spot.position.set(3, 12, -3);
-    spot.castShadow = true;
-    spot.shadow.mapSize.set(1024, 1024);
-    scene.add(spot);
-    const spot2 = new THREE.SpotLight(0xffffff, 1.8, 40, Math.PI / 4, 0.4, 1);
-    spot2.position.set(-3, 12, 3);
-    scene.add(spot2);
+    // Lights: soft ambient + big hemisphere for arena feel
+    scene.add(new THREE.AmbientLight(0xffffff, 0.28));
+    scene.add(new THREE.HemisphereLight(0xbfd8ff, 0.06, 0x101018));
 
-    // Floor (hardwood)
-    const floorGeo = new THREE.PlaneGeometry(30, 30);
-    const floorMat = new THREE.MeshStandardMaterial({ color: 0xc48c50, roughness: 0.4, metalness: 0.1 });
+    // Overhead floodlight row (8 rigs across the ceiling)
+    const rigCount = 9;
+    for (let i = 0; i < rigCount; i++) {
+      const t = (i / (rigCount - 1)) * 2 - 1; // -1..1
+      const sx = t * 8;
+      const sz = -2 + (i % 2 === 0 ? -1.5 : 1.5);
+      const sl = new THREE.SpotLight(0xffffff, 3.2, 45, Math.PI / 6, 0.35, 1.1);
+      sl.position.set(sx, 13, sz);
+      sl.target.position.set(sx * 0.25, 0, sz * 0.4);
+      sl.castShadow = i === 3 || i === 5;
+      if (sl.castShadow) sl.shadow.mapSize.set(1024, 1024);
+      scene.add(sl);
+      scene.add(sl.target);
+
+      // Volumetric beam cone (additive)
+      const beamGeo = new THREE.ConeGeometry(2.6, 13, 24, 1, true);
+      const beamMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.045,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const beam = new THREE.Mesh(beamGeo, beamMat);
+      beam.position.set(sx, 6.5, sz);
+      scene.add(beam);
+
+      // Bright fixture
+      const bulb = new THREE.Mesh(
+        new THREE.SphereGeometry(0.18, 12, 8),
+        new THREE.MeshBasicMaterial({ color: 0xffffff }),
+      );
+      bulb.position.set(sx, 13.05, sz);
+      scene.add(bulb);
+    }
+
+    // Court key spotlight highlighting hoop
+    const keySpot = new THREE.SpotLight(0xfff2d0, 2.4, 30, Math.PI / 5, 0.4, 1.2);
+    keySpot.position.set(0, 10, -2);
+    keySpot.target.position.set(0, RIM_Y, 0);
+    keySpot.castShadow = true;
+    keySpot.shadow.mapSize.set(2048, 2048);
+    scene.add(keySpot);
+    scene.add(keySpot.target);
+
+    // Floor (polished honey hardwood with plank grain)
+    const plankCanvas = document.createElement("canvas");
+    plankCanvas.width = 512; plankCanvas.height = 512;
+    const pctx = plankCanvas.getContext("2d")!;
+    const grd = pctx.createLinearGradient(0, 0, 0, 512);
+    grd.addColorStop(0, "#d99a5b");
+    grd.addColorStop(1, "#b87434");
+    pctx.fillStyle = grd; pctx.fillRect(0, 0, 512, 512);
+    for (let i = 0; i < 512; i += 32) {
+      pctx.fillStyle = `rgba(60,30,10,${0.25 + Math.random() * 0.2})`;
+      pctx.fillRect(0, i, 512, 1);
+    }
+    for (let i = 0; i < 400; i++) {
+      pctx.fillStyle = `rgba(80,40,15,${Math.random() * 0.15})`;
+      pctx.fillRect(Math.random() * 512, Math.random() * 512, 1 + Math.random() * 2, 1);
+    }
+    const floorTex = new THREE.CanvasTexture(plankCanvas);
+    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+    floorTex.repeat.set(8, 8);
+    floorTex.colorSpace = THREE.SRGBColorSpace;
+    const floorGeo = new THREE.PlaneGeometry(40, 40);
+    const floorMat = new THREE.MeshStandardMaterial({
+      map: floorTex,
+      roughness: 0.35,
+      metalness: 0.05,
+    });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
     scene.add(floor);
 
-    // Paint (blue key)
+    // Paint (vibrant cyan-blue key)
     const keyGeo = new THREE.PlaneGeometry(4.9, 5.8);
-    const keyMat = new THREE.MeshStandardMaterial({ color: 0x1a5fbf, roughness: 0.5 });
+    const keyMat = new THREE.MeshStandardMaterial({ color: 0x0aa3d9, roughness: 0.55, metalness: 0.05 });
     const key = new THREE.Mesh(keyGeo, keyMat);
     key.rotation.x = -Math.PI / 2;
-    key.position.set(0, 0.001, -2.9 + 2.9);
-    key.position.z = -2.9 + 2.9 - 2.9; // center between backboard(0) and FT line (-4)
-    key.position.z = -2.0;
+    key.position.set(0, 0.002, -2.0);
+    key.receiveShadow = true;
     scene.add(key);
 
-    // Free throw line (white)
-    const lineMat = new THREE.LineBasicMaterial({ color: 0xffffff });
-    const ftLineGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(-2.45, 0.002, FT_LINE_Z),
-      new THREE.Vector3(2.45, 0.002, FT_LINE_Z),
-    ]);
-    scene.add(new THREE.Line(ftLineGeo, lineMat));
+    // Thick painted white line helper
+    const paintLine = (pts: THREE.Vector3[], width = 0.06) => {
+      // build a thin ribbon by extruding between points
+      const group = new THREE.Group();
+      const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const dx = b.x - a.x, dz = b.z - a.z;
+        const len = Math.hypot(dx, dz);
+        if (len < 1e-6) continue;
+        const geo = new THREE.PlaneGeometry(len, width);
+        const m = new THREE.Mesh(geo, mat);
+        m.rotation.x = -Math.PI / 2;
+        m.position.set((a.x + b.x) / 2, 0.004, (a.z + b.z) / 2);
+        m.rotation.z = -Math.atan2(dz, dx);
+        group.add(m);
+      }
+      return group;
+    };
 
-    // 3-point arc (approx)
+    // Free throw straight line
+    scene.add(paintLine([
+      new THREE.Vector3(-2.45, 0, FT_LINE_Z),
+      new THREE.Vector3(2.45, 0, FT_LINE_Z),
+    ], 0.08));
+
+    // Free throw circle/arc (semi in front of FT line, dominant foreground)
+    const ftArcPts: THREE.Vector3[] = [];
+    const ftR = 1.8;
+    for (let a = 0; a <= Math.PI; a += Math.PI / 48) {
+      ftArcPts.push(new THREE.Vector3(Math.cos(a) * ftR, 0, FT_LINE_Z - Math.sin(a) * ftR));
+    }
+    scene.add(paintLine(ftArcPts, 0.07));
+    // dashed rear half of FT circle
+    for (let a = 0; a < Math.PI; a += Math.PI / 12) {
+      const p1 = new THREE.Vector3(Math.cos(a) * ftR, 0, FT_LINE_Z + Math.sin(a) * ftR);
+      const p2 = new THREE.Vector3(Math.cos(a + Math.PI / 24) * ftR, 0, FT_LINE_Z + Math.sin(a + Math.PI / 24) * ftR);
+      scene.add(paintLine([p1, p2], 0.06));
+    }
+
+    // Key rectangle border
+    scene.add(paintLine([
+      new THREE.Vector3(-2.45, 0, FT_LINE_Z),
+      new THREE.Vector3(-2.45, 0, 0),
+      new THREE.Vector3(2.45, 0, 0),
+      new THREE.Vector3(2.45, 0, FT_LINE_Z),
+    ], 0.06));
+
+    // 3-point arc
     const arcPts: THREE.Vector3[] = [];
     const arcR = 6.75;
-    for (let a = 0; a <= Math.PI; a += Math.PI / 64) {
-      arcPts.push(new THREE.Vector3(Math.cos(a) * arcR, 0.002, -Math.sin(a) * arcR + 0));
+    for (let a = 0.15; a <= Math.PI - 0.15; a += Math.PI / 96) {
+      arcPts.push(new THREE.Vector3(Math.cos(a) * arcR, 0, -Math.sin(a) * arcR));
     }
-    scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(arcPts), lineMat));
+    scene.add(paintLine(arcPts, 0.07));
+    // baseline
+    scene.add(paintLine([
+      new THREE.Vector3(-7.5, 0, 1.2),
+      new THREE.Vector3(7.5, 0, 1.2),
+    ], 0.08));
 
-    // Backboard
+    // Backboard — clear glass with white border and blue frame
     const bbGeo = new THREE.BoxGeometry(BACKBOARD_W, BACKBOARD_H, 0.05);
     const bbMat = new THREE.MeshPhysicalMaterial({
-      color: 0xffffff, transparent: true, opacity: 0.25, roughness: 0.05, transmission: 0.9,
+      color: 0xffffff, transparent: true, opacity: 0.22, roughness: 0.02,
+      transmission: 0.92, thickness: 0.05, clearcoat: 1, clearcoatRoughness: 0.05,
     });
     const bb = new THREE.Mesh(bbGeo, bbMat);
     bb.position.set(0, BACKBOARD_Y, BACKBOARD_Z + 0.025);
     scene.add(bb);
-    // Shooter square outline
-    const sqGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(-0.3, RIM_Y + 0.05, BACKBOARD_Z),
-      new THREE.Vector3(0.3, RIM_Y + 0.05, BACKBOARD_Z),
-      new THREE.Vector3(0.3, RIM_Y + 0.5, BACKBOARD_Z),
-      new THREE.Vector3(-0.3, RIM_Y + 0.5, BACKBOARD_Z),
-      new THREE.Vector3(-0.3, RIM_Y + 0.05, BACKBOARD_Z),
-    ]);
-    scene.add(new THREE.Line(sqGeo, new THREE.LineBasicMaterial({ color: 0xffffff })));
+    // Blue outer frame
+    const frameMat = new THREE.MeshStandardMaterial({ color: 0x1266d6, roughness: 0.35, metalness: 0.3 });
+    const frameT = 0.04;
+    const bbW = BACKBOARD_W, bbH = BACKBOARD_H;
+    const frameZ = BACKBOARD_Z + 0.052;
+    const framePieces = [
+      new THREE.Mesh(new THREE.BoxGeometry(bbW + frameT * 2, frameT, 0.06), frameMat),
+      new THREE.Mesh(new THREE.BoxGeometry(bbW + frameT * 2, frameT, 0.06), frameMat),
+      new THREE.Mesh(new THREE.BoxGeometry(frameT, bbH, 0.06), frameMat),
+      new THREE.Mesh(new THREE.BoxGeometry(frameT, bbH, 0.06), frameMat),
+    ];
+    framePieces[0].position.set(0, BACKBOARD_Y + bbH / 2, frameZ);
+    framePieces[1].position.set(0, BACKBOARD_Y - bbH / 2, frameZ);
+    framePieces[2].position.set(-bbW / 2 - frameT / 2, BACKBOARD_Y, frameZ);
+    framePieces[3].position.set(bbW / 2 + frameT / 2, BACKBOARD_Y, frameZ);
+    framePieces.forEach((p) => scene.add(p));
+    // White inner border stripe
+    const whiteBorderMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const borderT = 0.025;
+    const wbZ = BACKBOARD_Z + 0.051;
+    const iw = bbW - 0.08, ih = bbH - 0.08;
+    const wbPieces = [
+      new THREE.Mesh(new THREE.PlaneGeometry(iw, borderT), whiteBorderMat),
+      new THREE.Mesh(new THREE.PlaneGeometry(iw, borderT), whiteBorderMat),
+      new THREE.Mesh(new THREE.PlaneGeometry(borderT, ih), whiteBorderMat),
+      new THREE.Mesh(new THREE.PlaneGeometry(borderT, ih), whiteBorderMat),
+    ];
+    wbPieces[0].position.set(0, BACKBOARD_Y + ih / 2, wbZ);
+    wbPieces[1].position.set(0, BACKBOARD_Y - ih / 2, wbZ);
+    wbPieces[2].position.set(-iw / 2, BACKBOARD_Y, wbZ);
+    wbPieces[3].position.set(iw / 2, BACKBOARD_Y, wbZ);
+    wbPieces.forEach((p) => scene.add(p));
+    // Shooter target square (white filled outline)
+    const sqW = 0.6, sqH = 0.45;
+    const sqZ = BACKBOARD_Z + 0.051;
+    const sqPieces = [
+      new THREE.Mesh(new THREE.PlaneGeometry(sqW, borderT), whiteBorderMat),
+      new THREE.Mesh(new THREE.PlaneGeometry(sqW, borderT), whiteBorderMat),
+      new THREE.Mesh(new THREE.PlaneGeometry(borderT, sqH), whiteBorderMat),
+      new THREE.Mesh(new THREE.PlaneGeometry(borderT, sqH), whiteBorderMat),
+    ];
+    const sqCy = RIM_Y + 0.05 + sqH / 2;
+    sqPieces[0].position.set(0, sqCy + sqH / 2, sqZ);
+    sqPieces[1].position.set(0, sqCy - sqH / 2, sqZ);
+    sqPieces[2].position.set(-sqW / 2, sqCy, sqZ);
+    sqPieces[3].position.set(sqW / 2, sqCy, sqZ);
+    sqPieces.forEach((p) => scene.add(p));
 
-    // Rim (torus)
-    const rimGeo = new THREE.TorusGeometry(RIM_RADIUS, RIM_TUBE, 16, 48);
+    // Rim (bright orange)
+    const rimGeo = new THREE.TorusGeometry(RIM_RADIUS, RIM_TUBE, 20, 64);
     const rimMat = new THREE.MeshStandardMaterial({
-      color: 0xff5500,
-      emissive: 0xff2200,
-      emissiveIntensity: 0.6,
-      roughness: 0.3,
-      metalness: 0.7,
+      color: 0xff6a1a,
+      emissive: 0xff4400,
+      emissiveIntensity: 0.55,
+      roughness: 0.35,
+      metalness: 0.8,
     });
     const rim = new THREE.Mesh(rimGeo, rimMat);
     rim.rotation.x = Math.PI / 2;
@@ -307,17 +455,23 @@ export default function FreeThrowSim({
     }
     scene.add(netGroup);
 
-    // Support arm & base
-    const armMat = new THREE.MeshStandardMaterial({ color: 0xd4a017, roughness: 0.5, metalness: 0.4 });
-    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.6), armMat);
-    arm.position.set(0, BACKBOARD_Y, BACKBOARD_Z + 0.35);
+    // Support: yellow cylindrical arm & neck, royal-blue tapered padded base
+    const yellowMat = new THREE.MeshStandardMaterial({ color: 0xf6c518, roughness: 0.45, metalness: 0.35 });
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.7, 20), yellowMat);
+    arm.rotation.x = Math.PI / 2;
+    arm.position.set(0, BACKBOARD_Y, BACKBOARD_Z + 0.4);
     scene.add(arm);
-    const pole = new THREE.Mesh(new THREE.BoxGeometry(0.15, BACKBOARD_Y, 0.15), armMat);
-    pole.position.set(0, BACKBOARD_Y / 2, BACKBOARD_Z + 0.65);
-    scene.add(pole);
-    const base = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.4, 1.2), new THREE.MeshStandardMaterial({ color: 0x1a5fbf }));
-    base.position.set(0, 0.2, BACKBOARD_Z + 0.9);
-    scene.add(base);
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, BACKBOARD_Y - 0.6, 24), yellowMat);
+    neck.position.set(0, (BACKBOARD_Y - 0.6) / 2 + 0.6, BACKBOARD_Z + 0.75);
+    scene.add(neck);
+    // Royal-blue padded base (tapered inward at top)
+    const padMat = new THREE.MeshStandardMaterial({ color: 0x1a3fb5, roughness: 0.7, metalness: 0.05 });
+    const baseTop = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.75, 0.6, 24), padMat);
+    baseTop.position.set(0, 0.6, BACKBOARD_Z + 0.9);
+    scene.add(baseTop);
+    const baseBottom = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.35, 1.4), padMat);
+    baseBottom.position.set(0, 0.175, BACKBOARD_Z + 0.9);
+    scene.add(baseBottom);
 
     // Ball
     const ballGeo = new THREE.SphereGeometry(BALL_R, 32, 24);
@@ -349,30 +503,106 @@ export default function FreeThrowSim({
     const trajLine = new THREE.Line(trajGeo, trajMat);
     scene.add(trajLine);
 
-    // Stadium backdrop
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x111122, roughness: 1 });
-    const back = new THREE.Mesh(new THREE.PlaneGeometry(40, 15), wallMat);
-    back.position.set(0, 7.5, 8);
-    back.rotation.y = Math.PI;
-    scene.add(back);
-    const backShoot = new THREE.Mesh(new THREE.PlaneGeometry(40, 15), wallMat);
-    backShoot.position.set(0, 7.5, -10);
-    scene.add(backShoot);
-    const sideL = new THREE.Mesh(new THREE.PlaneGeometry(20, 15), wallMat);
-    sideL.position.set(-10, 7.5, -1);
-    sideL.rotation.y = Math.PI / 2;
-    scene.add(sideL);
-    const sideR = new THREE.Mesh(new THREE.PlaneGeometry(20, 15), wallMat);
-    sideR.position.set(10, 7.5, -1);
-    sideR.rotation.y = -Math.PI / 2;
-    scene.add(sideR);
+    // Stadium — oval crowd tier with sparkles and LED ribbon
+    const crowdCanvas = document.createElement("canvas");
+    crowdCanvas.width = 1024; crowdCanvas.height = 256;
+    const cctx = crowdCanvas.getContext("2d")!;
+    const cg = cctx.createLinearGradient(0, 0, 0, 256);
+    cg.addColorStop(0, "#02030a");
+    cg.addColorStop(0.6, "#0a0d1c");
+    cg.addColorStop(1, "#050710");
+    cctx.fillStyle = cg; cctx.fillRect(0, 0, 1024, 256);
+    for (let i = 0; i < 3500; i++) {
+      const x = Math.random() * 1024, y = 30 + Math.random() * 220;
+      cctx.fillStyle = `rgba(${40 + Math.random() * 40},${40 + Math.random() * 40},${60 + Math.random() * 60},0.6)`;
+      cctx.fillRect(x, y, 2, 2);
+    }
+    // sparkle flashes
+    for (let i = 0; i < 80; i++) {
+      const x = Math.random() * 1024, y = 40 + Math.random() * 200;
+      cctx.fillStyle = `rgba(255,255,235,${0.6 + Math.random() * 0.4})`;
+      cctx.beginPath(); cctx.arc(x, y, 1.2 + Math.random() * 1.6, 0, Math.PI * 2); cctx.fill();
+    }
+    const crowdTex = new THREE.CanvasTexture(crowdCanvas);
+    crowdTex.wrapS = THREE.RepeatWrapping;
+    crowdTex.repeat.set(2, 1);
+    crowdTex.colorSpace = THREE.SRGBColorSpace;
+    const crowdMat = new THREE.MeshBasicMaterial({ map: crowdTex, side: THREE.BackSide });
+    const crowdRing = new THREE.Mesh(
+      new THREE.CylinderGeometry(22, 24, 6, 64, 1, true),
+      crowdMat,
+    );
+    crowdRing.position.set(0, 3, -1);
+    crowdRing.scale.set(1, 1, 0.7); // oval
+    scene.add(crowdRing);
 
-    // LED banner
-    const ledMat = new THREE.MeshBasicMaterial({ color: 0x1e90ff });
-    const led = new THREE.Mesh(new THREE.PlaneGeometry(20, 0.6), ledMat);
-    led.position.set(0, 5, 7.9);
-    led.rotation.y = Math.PI;
-    scene.add(led);
+    // Upper dark rim
+    const upperRing = new THREE.Mesh(
+      new THREE.CylinderGeometry(22, 22, 6, 64, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0x02030a, side: THREE.BackSide }),
+    );
+    upperRing.position.set(0, 9, -1);
+    upperRing.scale.set(1, 1, 0.7);
+    scene.add(upperRing);
+
+    // LED ribbon banner
+    const ledCanvas = document.createElement("canvas");
+    ledCanvas.width = 2048; ledCanvas.height = 96;
+    const lctx = ledCanvas.getContext("2d")!;
+    lctx.fillStyle = "#0a3a9c"; lctx.fillRect(0, 0, 2048, 96);
+    lctx.fillStyle = "#1e90ff";
+    for (let x = 0; x < 2048; x += 6) lctx.fillRect(x, 0, 3, 96);
+    lctx.fillStyle = "rgba(255,255,255,0.95)";
+    lctx.font = "bold 56px sans-serif";
+    lctx.textBaseline = "middle";
+    const msg = "  MAKE  SOME  NOISE   •   BASKETBALL  STADIUM   •  ";
+    let tx = 0;
+    while (tx < 2048) { lctx.fillText(msg, tx, 48); tx += lctx.measureText(msg).width; }
+    const ledTex = new THREE.CanvasTexture(ledCanvas);
+    ledTex.wrapS = THREE.RepeatWrapping;
+    ledTex.colorSpace = THREE.SRGBColorSpace;
+    const ledRing = new THREE.Mesh(
+      new THREE.CylinderGeometry(21.6, 21.6, 0.7, 64, 1, true),
+      new THREE.MeshBasicMaterial({ map: ledTex, side: THREE.BackSide, toneMapped: false }),
+    );
+    ledRing.position.set(0, 6.2, -1);
+    ledRing.scale.set(1, 1, 0.7);
+    scene.add(ledRing);
+    // animate LED scroll
+    const ledClock = { t: 0 };
+    const ledTick = () => {
+      ledClock.t += 0.002;
+      ledTex.offset.x = ledClock.t;
+    };
+    (stateRef.current as any).__ledTick = ledTick;
+
+    // Lens flare / sun star sprites near ceiling lights
+    const flareCanvas = document.createElement("canvas");
+    flareCanvas.width = 256; flareCanvas.height = 256;
+    const fctx = flareCanvas.getContext("2d")!;
+    const rg = fctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+    rg.addColorStop(0, "rgba(255,255,255,1)");
+    rg.addColorStop(0.15, "rgba(255,255,240,0.6)");
+    rg.addColorStop(0.4, "rgba(255,220,180,0.15)");
+    rg.addColorStop(1, "rgba(255,255,255,0)");
+    fctx.fillStyle = rg; fctx.fillRect(0, 0, 256, 256);
+    fctx.strokeStyle = "rgba(255,255,255,0.55)";
+    fctx.lineWidth = 2;
+    fctx.beginPath(); fctx.moveTo(0, 128); fctx.lineTo(256, 128); fctx.stroke();
+    fctx.beginPath(); fctx.moveTo(128, 0); fctx.lineTo(128, 256); fctx.stroke();
+    const flareTex = new THREE.CanvasTexture(flareCanvas);
+    const flareMat = new THREE.SpriteMaterial({
+      map: flareTex, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, depthTest: false,
+    });
+    for (let i = 0; i < rigCount; i++) {
+      const t = (i / (rigCount - 1)) * 2 - 1;
+      const sx = t * 8;
+      const sz = -2 + (i % 2 === 0 ? -1.5 : 1.5);
+      const s = new THREE.Sprite(flareMat.clone());
+      s.position.set(sx, 12.6, sz);
+      s.scale.set(3.5, 3.5, 1);
+      scene.add(s);
+    }
 
     stateRef.current.renderer = renderer;
     stateRef.current.scene = scene;
@@ -443,6 +673,8 @@ export default function FreeThrowSim({
           }, 800);
         }
       }
+      const tick = (stateRef.current as any).__ledTick;
+      if (tick) tick();
       renderer.render(scene, camera);
       raf = requestAnimationFrame(animate);
     };
