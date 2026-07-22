@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Skill(run)",
+      "Skill(run:*)",
+      "Bash(npm ls *)",
+      "Bash(find / -maxdepth 4 -iname \"*playwright*\" -not -path \"*/node_modules/*\")",
+      "Read(//Applications/**)",
+      "Bash(mdfind \"kMDItemFSName == 'Google Chrome.app'\")",
+      "Bash(node test.js)",
+      "Bash(node test2.js)",
+      "Bash(node test3.js)",
+      "Bash(timeout 200 node test4.js)",
+      "Bash(node test4.js)",
+      "Bash(echo \"started pid $!\")",
+      "Bash(kill 27098)",
+      "Bash(lsof -ti:8081 -sTCP:LISTEN)",
+      "Bash(node test5.js)",
+      "Bash(node test6.js)",
+      "Bash(xargs -r kill)",
+      "Bash(node test7.js)",
+      "Bash(lsof -p 21274 -a -i -sTCP:LISTEN)",
+      "Bash(awk '{print $9}')",
+      "Bash(kill 21274)",
+      "Bash(kill -9 21274)",
+      "Bash(curl -sf http://localhost:8080)",
+      "Bash(break)",
+      "Bash(node test8.js)",
+      "Bash(node test9.js)",
+      "Bash(node test10.js)",
+      "Bash(node test11.js)",
+      "Bash(node test12.js)"
+    ]
+  }
+}
