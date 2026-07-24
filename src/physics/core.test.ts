@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { simulate, type ShotParams } from "./core";
+import { applyContactImpulse, releaseHeightM, simulate, type ShotParams } from "./core";
+import { BALL_INERTIA_KGM2, BALL_MASS_KG, FLOOR_RESTITUTION, FT_LINE_Z_M } from "./constants";
 
 const params: ShotParams = {
   heightCm: 190,
@@ -74,7 +75,10 @@ describe("simulate", () => {
       const result = simulate(c);
       expect(typeof result.hitStepCap).toBe("boolean");
       const lastSampleTime = result.trajectory[result.trajectory.length - 4];
-      expect(lastSampleTime).toBeLessThanOrEqual(SIM_MAX_DURATION_S);
+      // +1e-4 tolerance for Float32Array storage rounding of the double `t`,
+      // not a relaxation of the cap itself — core.ts must never take a step
+      // that pushes t past SIM_MAX_DURATION_S.
+      expect(lastSampleTime).toBeLessThanOrEqual(SIM_MAX_DURATION_S + 1e-4);
     }
   });
 
@@ -103,5 +107,154 @@ describe("simulate", () => {
     expect(withoutTrajectory.maxHeight).toBe(withTrajectory.maxHeight);
     expect(withoutTrajectory.travelDist).toBe(withTrajectory.travelDist);
     expect(withoutTrajectory.hitStepCap).toBe(withTrajectory.hitStepCap);
+  });
+});
+
+describe("Phase 2 physics", () => {
+  // A vertical drop, expressed through the public ShotParams shape: angleDeg
+  // 90 with speed 0 gives zero initial velocity in every direction, and
+  // heightCm is chosen so releaseHeightM(heightCm) is exactly 2.0m.
+  const dropHeightM = 2.0;
+  const dropHeightCm = (dropHeightM / 1.25) * 100;
+  const straightDrop: ShotParams = { heightCm: dropHeightCm, angleDeg: 90, aimDeg: 0, speed: 0, spinRps: 0 };
+
+  it("a 2.0m drop with zero spin rebounds to ~1.22m (floor restitution 0.78)", () => {
+    // Sanity-check the heightCm -> release-height inverse before relying on it.
+    expect(releaseHeightM(dropHeightCm)).toBeCloseTo(dropHeightM, 9);
+
+    const result = simulate(straightDrop);
+    expect(result.floorTime).not.toBeNull();
+
+    // Peak height in the ~1s after the first floor contact.
+    const traj = result.trajectory;
+    let peak = 0;
+    for (let i = 0; i < traj.length; i += 4) {
+      const t = traj[i];
+      const y = traj[i + 2];
+      if (t > result.floorTime! && t < result.floorTime! + 1.0 && y > peak) peak = y;
+    }
+
+    // e^2 * 2.0 = 0.78^2 * 2.0 = 1.2168m in vacuum; air drag over the fall and
+    // rebound pulls the real figure a little under that (measured ~1.19m), so
+    // this allows a wider band than a pure-vacuum test would.
+    expect(peak).toBeGreaterThan(1.1);
+    expect(peak).toBeLessThan(1.25);
+  });
+
+  it("a straight-down drop bounces straight up with no horizontal drift", () => {
+    const result = simulate(straightDrop);
+    expect(result.floorPoint).not.toBeNull();
+    const [x, z] = result.floorPoint!;
+    expect(x).toBeCloseTo(0, 6);
+    expect(z).toBeCloseTo(FT_LINE_Z_M, 6);
+
+    // No sample ever drifts off the release x/z either, not just the landing point.
+    const traj = result.trajectory;
+    for (let i = 0; i < traj.length; i += 4) {
+      expect(traj[i + 1]).toBeCloseTo(0, 6); // x
+    }
+  });
+
+  it("kinetic + potential energy never increases during unobstructed flight", () => {
+    // Reconstructing velocity by finite-differencing simulate()'s decimated
+    // trajectory is too noisy right around a bounce (see applyContactImpulse's
+    // export comment), so this checks the smooth part of several realistic
+    // shots using only same-width periodic-interval sample pairs, which keeps
+    // the finite-difference numerically honest.
+    const shots: ShotParams[] = [
+      { heightCm: 190, angleDeg: 52, aimDeg: 0, speed: 7.5, spinRps: 2.5 },
+      { heightCm: 160, angleDeg: 40, aimDeg: -8, speed: 6.0, spinRps: 4.0 },
+      { heightCm: 220, angleDeg: 60, aimDeg: 10, speed: 8.5, spinRps: 0 },
+      { heightCm: 190, angleDeg: 35, aimDeg: 6, speed: 9.0, spinRps: 3.5 },
+    ];
+    const PERIODIC_INTERVAL_S = 0.01;
+    const ENERGY_NOISE_TOLERANCE_J = 0.05; // observed finite-difference noise floor is ~0.02J
+
+    for (const shot of shots) {
+      const result = simulate(shot);
+      const traj = result.trajectory;
+      let prevEnergy: number | null = null;
+      for (let i = 0; i < traj.length - 4; i += 4) {
+        const t0 = traj[i];
+        const y0 = traj[i + 2];
+        const t1 = traj[i + 4];
+        const dt = t1 - t0;
+        if (Math.abs(dt - PERIODIC_INTERVAL_S) > 0.001) {
+          prevEnergy = null; // irregular interval (adjacent to a forced collision sample) — skip
+          continue;
+        }
+        const vx = (traj[i + 5] - traj[i + 1]) / dt;
+        const vy = (traj[i + 6] - traj[i + 2]) / dt;
+        const vz = (traj[i + 7] - traj[i + 3]) / dt;
+        const energy = 0.5 * BALL_MASS_KG * (vx * vx + vy * vy + vz * vz) + BALL_MASS_KG * 9.81 * y0;
+        if (prevEnergy !== null) {
+          expect(energy).toBeLessThanOrEqual(prevEnergy + ENERGY_NOISE_TOLERANCE_J);
+        }
+        prevEnergy = energy;
+      }
+    }
+  });
+
+  it("a single rim/backboard/floor contact never increases translational + rotational energy", () => {
+    // Direct, artifact-free test of applyContactImpulse itself, covering the
+    // "across any bounce" half of the energy invariant that simulate()'s
+    // decimated trajectory can't reliably verify (see the test above).
+    const kineticPlusRotational = (velX: number, velY: number, velZ: number, spinX: number, spinY: number, spinZ: number) =>
+      0.5 * BALL_MASS_KG * (velX * velX + velY * velY + velZ * velZ) + 0.5 * BALL_INERTIA_KGM2 * (spinX * spinX + spinY * spinY + spinZ * spinZ);
+
+    const normals: [number, number, number][] = [
+      [0, 1, 0], // floor
+      [0, 0, -1], // backboard
+      [0.6, 0.4, -0.6928], // an arbitrary unit-ish rim contact normal (normalized below)
+    ];
+
+    let cases = 0;
+    for (const [nx0, ny0, nz0] of normals) {
+      const nLen = Math.hypot(nx0, ny0, nz0);
+      const nx = nx0 / nLen;
+      const ny = ny0 / nLen;
+      const nz = nz0 / nLen;
+      for (let trial = 0; trial < 40; trial++) {
+        // Deterministic pseudo-random incoming velocity/spin, biased toward
+        // "approaching" the surface so applyContactImpulse actually does something.
+        const seed = trial * 7 + nx * 13 + ny * 17 + nz * 19;
+        const rnd = (k: number) => {
+          const v = Math.sin(seed * 12.9898 + k * 78.233) * 43758.5453;
+          return v - Math.floor(v);
+        };
+        const velX = (rnd(1) - 0.5) * 20;
+        const velY = -Math.abs(rnd(2)) * 20 - 0.1; // biased downward/inward
+        const velZ = (rnd(3) - 0.5) * 20;
+        const spinX = (rnd(4) - 0.5) * 40;
+        const spinY = (rnd(5) - 0.5) * 40;
+        const spinZ = (rnd(6) - 0.5) * 40;
+
+        const before = kineticPlusRotational(velX, velY, velZ, spinX, spinY, spinZ);
+        const after = applyContactImpulse(velX, velY, velZ, spinX, spinY, spinZ, nx, ny, nz, FLOOR_RESTITUTION, 0.5);
+        const afterEnergy = kineticPlusRotational(after.velX, after.velY, after.velZ, after.spinX, after.spinY, after.spinZ);
+
+        expect(afterEnergy).toBeLessThanOrEqual(before + 1e-9);
+        cases++;
+      }
+    }
+    expect(cases).toBe(normals.length * 40);
+  });
+
+  it("simulate(p) called twice returns identical catchPoint values", () => {
+    // A dedicated check for the Phase 2 spec's specific wording, on top of
+    // the broader determinism test above (which already covers this).
+    const rimMissParams: ShotParams = { heightCm: 190, angleDeg: 50, aimDeg: 0, speed: 6.78, spinRps: 2.5 };
+    const r1 = simulate(rimMissParams);
+    const r2 = simulate(rimMissParams);
+    expect(r1.catchPoint).toEqual(r2.catchPoint);
+  });
+
+  it("a well-aimed free throw returns outcome: 'made'", () => {
+    // Found by sweeping angle/speed at aim=0 under the Phase 2 physics
+    // (drag, Magnus, and rim friction all shift where "made" lands compared
+    // to the pre-Phase-2 model in core.v1.golden.json).
+    const wellAimed: ShotParams = { heightCm: 190, angleDeg: 50, aimDeg: 0, speed: 7.2, spinRps: 2.5 };
+    const result = simulate(wellAimed);
+    expect(result.outcome).toBe("made");
   });
 });
