@@ -55,4 +55,53 @@ describe("simulate", () => {
     expect(fast.outcome).toBe(slow.outcome);
     expect(Array.from(fast.trajectory)).toEqual(Array.from(slow.trajectory));
   });
+
+  it("always returns within SIM_MAX_DURATION_S and reports whether the cap was needed", () => {
+    // Every restitution coefficient is < 1 and gravity is constant, so energy
+    // strictly decreases every bounce and a real ShotParams can't fail to
+    // settle — hitStepCap should be false in practice. What this test
+    // actually guards is the *safety property*: simulate() is bounded no
+    // matter what, which is what makes it safe to call from a Phase 3 worker
+    // pool without an external watchdog timer.
+    const SIM_MAX_DURATION_S = 15; // mirrors physics/constants.ts; simulate() must never exceed this
+    const cases: ShotParams[] = [
+      params,
+      { heightCm: 190, angleDeg: 0, aimDeg: 0, speed: 0.01, spinRps: 0 }, // barely moving
+      { heightCm: 140, angleDeg: 80, aimDeg: 0, speed: 4, spinRps: 0 }, // steep, slow
+      { heightCm: 230, angleDeg: 20, aimDeg: 30, speed: 12, spinRps: 0 }, // shallow, fast, wide
+    ];
+    for (const c of cases) {
+      const result = simulate(c);
+      expect(typeof result.hitStepCap).toBe("boolean");
+      const lastSampleTime = result.trajectory[result.trajectory.length - 4];
+      expect(lastSampleTime).toBeLessThanOrEqual(SIM_MAX_DURATION_S);
+    }
+  });
+
+  it("always records an exact trajectory sample at every collision, not just on the decimation schedule", () => {
+    const result = simulate(params);
+    const sampleTimes: number[] = [];
+    for (let i = 0; i < result.trajectory.length; i += 4) sampleTimes.push(result.trajectory[i]);
+
+    if (result.floorTime !== null) {
+      // Float32Array storage loses a little precision vs. the double
+      // floorTime, so compare with a tolerance well under one physics step (1ms).
+      const hasExactSample = sampleTimes.some((t) => Math.abs(t - result.floorTime!) < 1e-4);
+      expect(hasExactSample).toBe(true);
+    }
+  });
+
+  it("opts.recordTrajectory: false skips the trajectory array but leaves every other field unchanged", () => {
+    const withTrajectory = simulate(params);
+    const withoutTrajectory = simulate(params, { recordTrajectory: false });
+
+    expect(withoutTrajectory.trajectory.length).toBe(0);
+    expect(withoutTrajectory.outcome).toBe(withTrajectory.outcome);
+    expect(withoutTrajectory.rimContacts).toBe(withTrajectory.rimContacts);
+    expect(withoutTrajectory.floorPoint).toEqual(withTrajectory.floorPoint);
+    expect(withoutTrajectory.catchPoint).toEqual(withTrajectory.catchPoint);
+    expect(withoutTrajectory.maxHeight).toBe(withTrajectory.maxHeight);
+    expect(withoutTrajectory.travelDist).toBe(withTrajectory.travelDist);
+    expect(withoutTrajectory.hitStepCap).toBe(withTrajectory.hitStepCap);
+  });
 });

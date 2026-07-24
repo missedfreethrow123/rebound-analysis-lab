@@ -52,11 +52,18 @@ export interface ShotParams {
   // now so the sweep worker protocol never has to change shape later.
 }
 
+export interface SimulateOptions {
+  // When false, skips building the trajectory sample array entirely (returns
+  // an empty Float32Array) — the Phase 3 sweep doesn't animate anything and
+  // would otherwise pay for ~1500 floats of allocation per shot for nothing.
+  recordTrajectory?: boolean;
+}
+
 export type Outcome = "made" | "rim_miss" | "backboard_miss" | "airball" | "out_of_bounds";
 
 export interface ShotResult {
   outcome: Outcome;
-  trajectory: Float32Array; // flat [t,x,y,z, t,x,y,z, ...] for animation, decimated
+  trajectory: Float32Array; // flat [t,x,y,z, t,x,y,z, ...] for animation, decimated except collision moments, which are always sampled exactly (see core.ts)
   rimContacts: number;
   floorPoint: [number, number] | null; // first floor contact, metres
   catchPoint: [number, number] | null; // where it descends through CATCH_HEIGHT_M after the *last* rim contact
@@ -75,6 +82,14 @@ export interface ShotResult {
   floorTime: number | null; // seconds from release to first floor contact
   floorImpactSpeed: number | null; // m/s, measured the same way the original UI did: *after* the floor's restitution/friction is applied, not the raw incoming speed
   firstImpactTime: number | null; // seconds from release to the first contact with rim, backboard, or floor (whichever comes first) — lets a UI preview truncate the flight the same way the pre-refactor implementation did, without a second physics pass
+
+  // True if the simulation hit SIM_MAX_DURATION_S (the hard step cap) without
+  // ever settling below the stop threshold. Should never happen in practice —
+  // every restitution coefficient is < 1, so energy strictly decreases each
+  // bounce and gravity guarantees a floor contact — but the cap exists so a
+  // pathological input can't hang a sweep worker, and this flag makes it
+  // visible if the cap is ever actually hit rather than failing silently.
+  hitStepCap: boolean;
 }
 
 const RIM_Z_M = 0;
@@ -97,7 +112,9 @@ export function releaseHeightM(heightCm: number): number {
   return (heightCm / 100) * 1.25; // release point sits above the player's head
 }
 
-export function simulate(p: ShotParams): ShotResult {
+export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
+  const recordTrajectory = opts?.recordTrajectory ?? true;
+
   const angle = (p.angleDeg * Math.PI) / 180;
   const aim = (p.aimDeg * Math.PI) / 180;
   const horizontalSpeed = p.speed * Math.cos(angle);
@@ -111,18 +128,32 @@ export function simulate(p: ShotParams): ShotResult {
 
   const dt = SIM_FIXED_DT_S;
   const maxSteps = Math.round(SIM_MAX_DURATION_S / dt);
-  const sampleCap = Math.ceil(maxSteps / TRAJECTORY_SAMPLE_EVERY_N_STEPS) + 2;
-  const trajectory = new Float32Array(sampleCap * 4);
+
+  // sampleCap sizing: one sample per decimation boundary, plus room for a
+  // forced sample at every step (worst case: a collision every step). In
+  // practice collisions are rare relative to maxSteps, so this is a loose
+  // upper bound, not a typical allocation size.
+  const sampleCap = recordTrajectory ? maxSteps + 2 : 0;
+  const trajectory = recordTrajectory ? new Float32Array(sampleCap * 4) : new Float32Array(0);
   let sampleCount = 0;
-  const pushSample = (t: number) => {
+  let lastSampledStep = -1;
+  // Records the current position at step index `stepIndex` (0 = release) as
+  // an animation sample, unless that exact step was already recorded. Called
+  // both periodically (decimation) and unconditionally on every collision, so
+  // a bounce is always an exact vertex in the sampled polyline — interpolating
+  // between two decimated samples straddling a bounce would otherwise cut the
+  // corner and visually skate the ball straight through the rim/floor/backboard.
+  const maybeSample = (stepIndex: number) => {
+    if (!recordTrajectory || stepIndex === lastSampledStep) return;
     const o = sampleCount * 4;
-    trajectory[o] = t;
+    trajectory[o] = stepIndex * dt;
     trajectory[o + 1] = posX;
     trajectory[o + 2] = posY;
     trajectory[o + 3] = posZ;
     sampleCount++;
+    lastSampledStep = stepIndex;
   };
-  pushSample(0);
+  maybeSample(0);
 
   let rimContacts = 0;
   let backboardHit = false;
@@ -201,6 +232,7 @@ export function simulate(p: ShotParams): ShotResult {
           velY *= 0.9;
           backboardHit = true;
           if (firstImpactTime === null) firstImpactTime = (step + 1) * dt;
+          maybeSample(step + 1);
         }
       }
     }
@@ -240,6 +272,7 @@ export function simulate(p: ShotParams): ShotResult {
           catchTime = null;
           catchSpeed = null;
           if (firstImpactTime === null) firstImpactTime = (step + 1) * dt;
+          maybeSample(step + 1);
         }
       }
     }
@@ -258,6 +291,7 @@ export function simulate(p: ShotParams): ShotResult {
           floorImpactSpeed = Math.hypot(velX, velY, velZ);
           if (firstImpactTime === null) firstImpactTime = floorTime;
         }
+        maybeSample(step + 1);
       }
     }
 
@@ -300,7 +334,7 @@ export function simulate(p: ShotParams): ShotResult {
     if (posY > maxHeight) maxHeight = posY;
 
     if ((step + 1) % TRAJECTORY_SAMPLE_EVERY_N_STEPS === 0) {
-      pushSample((step + 1) * dt);
+      maybeSample(step + 1);
     }
 
     if (Math.hypot(velX, velY, velZ) < 0.3 && posY < BALL_RADIUS_M + 0.01) {
@@ -308,11 +342,13 @@ export function simulate(p: ShotParams): ShotResult {
     }
   }
 
+  // step < maxSteps unconditionally bounds the loop regardless of `flying`,
+  // so simulate() always returns — hitStepCap just reports whether it had to.
+  const hitStepCap = flying && step >= maxSteps;
+
   // Always end the sample array on the ball's final resting/cutoff state, even
   // if that doesn't land on a decimation boundary.
-  if (sampleCount === 0 || trajectory[(sampleCount - 1) * 4] !== step * dt) {
-    pushSample(step * dt);
-  }
+  maybeSample(step);
 
   let outcome: Outcome;
   if (madeShot) {
@@ -342,5 +378,6 @@ export function simulate(p: ShotParams): ShotResult {
     floorTime,
     floorImpactSpeed,
     firstImpactTime,
+    hitStepCap,
   };
 }

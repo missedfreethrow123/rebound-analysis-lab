@@ -1,0 +1,598 @@
+{
+  "_meta": {
+    "physicsVersion": "v1 (Phase 1: extracted, pre-Phase-2 physics — original inline constants, no drag/Magnus derivation, no rim friction/spin coupling)",
+    "generatedAt": "2026-07-24T15:04:44.098Z",
+    "note": "Snapshot of core.ts's output for comparison across physics changes. Not a correctness assertion — Phase 2 is expected to change these numbers (drag, restitution, and rim collision all change). trajectory arrays are omitted; only the scalar/tuple result fields are recorded, since those are what's meaningful to diff by eye."
+  },
+  "shots": [
+    {
+      "label": "default_slider_values",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 52,
+        "aimDeg": 0,
+        "speed": 7.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "backboard_miss",
+        "rimContacts": 0,
+        "floorPoint": [
+          0,
+          -0.08816964941751944
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 4.107678723750174,
+        "backboardHit": true,
+        "floorBounces": 10,
+        "travelDist": 17.571764466741783,
+        "floorTime": 1.524,
+        "floorImpactSpeed": 6.377302142898277,
+        "firstImpactTime": 0.999,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "short_weak_falls_short",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 45,
+        "aimDeg": 0,
+        "speed": 5.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "airball",
+        "rimContacts": 0,
+        "floorPoint": [
+          0,
+          0.2521893030165309
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 3.1341239900507354,
+        "backboardHit": false,
+        "floorBounces": 10,
+        "travelDist": 15.816574050644055,
+        "floorTime": 1.183,
+        "floorImpactSpeed": 6.3794261686755815,
+        "firstImpactTime": 1.183,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "long_hard_sails_over",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 52,
+        "aimDeg": 0,
+        "speed": 9,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "out_of_bounds",
+        "rimContacts": 0,
+        "floorPoint": [
+          0,
+          1.9335696208813442
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 4.843909282825419,
+        "backboardHit": false,
+        "floorBounces": 11,
+        "travelDist": 25.411722775583048,
+        "floorTime": 1.697,
+        "floorImpactSpeed": 7.41680324487833,
+        "firstImpactTime": 1.697,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "aim_far_left",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 52,
+        "aimDeg": -12,
+        "speed": 7.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "backboard_miss",
+        "rimContacts": 0,
+        "floorPoint": [
+          -1.3583790826792763,
+          -1.43529875068334
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 4.107678723750174,
+        "backboardHit": true,
+        "floorBounces": 11,
+        "travelDist": 21.48901830476893,
+        "floorTime": 1.5250000000000001,
+        "floorImpactSpeed": 6.905396142934246,
+        "firstImpactTime": 1.022,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "aim_far_right",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 52,
+        "aimDeg": 12,
+        "speed": 7.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "backboard_miss",
+        "rimContacts": 0,
+        "floorPoint": [
+          1.3583790826792763,
+          -1.43529875068334
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 4.107678723750174,
+        "backboardHit": true,
+        "floorBounces": 11,
+        "travelDist": 21.48901830476893,
+        "floorTime": 1.5250000000000001,
+        "floorImpactSpeed": 6.905396142934246,
+        "firstImpactTime": 1.022,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "aim_slight_left",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 52,
+        "aimDeg": -6,
+        "speed": 7.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "backboard_miss",
+        "rimContacts": 0,
+        "floorPoint": [
+          -0.6821820477381032,
+          -1.5230463074293514
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 4.107678723750174,
+        "backboardHit": true,
+        "floorBounces": 11,
+        "travelDist": 21.47550550216459,
+        "floorTime": 1.5250000000000001,
+        "floorImpactSpeed": 6.912302191682836,
+        "firstImpactTime": 1.0050000000000001,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "aim_slight_right",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 52,
+        "aimDeg": 6,
+        "speed": 7.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "backboard_miss",
+        "rimContacts": 0,
+        "floorPoint": [
+          0.6821820477381032,
+          -1.5230463074293514
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 4.107678723750174,
+        "backboardHit": true,
+        "floorBounces": 11,
+        "travelDist": 21.47550550216459,
+        "floorTime": 1.5250000000000001,
+        "floorImpactSpeed": 6.912302191682836,
+        "firstImpactTime": 1.0050000000000001,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "low_angle",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 35,
+        "aimDeg": 0,
+        "speed": 7,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "out_of_bounds",
+        "rimContacts": 0,
+        "floorPoint": [
+          0,
+          2.410879965097501
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 3.180361064630158,
+        "backboardHit": false,
+        "floorBounces": 11,
+        "travelDist": 18.408015939493666,
+        "floorTime": 1.201,
+        "floorImpactSpeed": 7.0932772975306175,
+        "firstImpactTime": 1.201,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "high_angle",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 65,
+        "aimDeg": 0,
+        "speed": 6.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "airball",
+        "rimContacts": 0,
+        "floorPoint": [
+          0,
+          -0.23176851609552593
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 4.1046691559398365,
+        "backboardHit": false,
+        "floorBounces": 10,
+        "travelDist": 18.26049772261539,
+        "floorTime": 1.5010000000000001,
+        "floorImpactSpeed": 6.8088755423577,
+        "firstImpactTime": 1.5010000000000001,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "made_shot_a",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 50,
+        "aimDeg": 0,
+        "speed": 7.12,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "made",
+        "rimContacts": 0,
+        "floorPoint": [
+          0,
+          0.5177098952290801
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 3.854735202224111,
+        "backboardHit": false,
+        "floorBounces": 10,
+        "travelDist": 17.16013218344504,
+        "floorTime": 1.427,
+        "floorImpactSpeed": 6.3421455948841645,
+        "firstImpactTime": 1.427,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "rim_miss_rebound",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 50,
+        "aimDeg": 0,
+        "speed": 6.78,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "rim_miss",
+        "rimContacts": 1,
+        "floorPoint": [
+          0,
+          1.0259278694135592
+        ],
+        "catchPoint": [
+          0,
+          0.4726381154463355
+        ],
+        "catchTime": 1.168,
+        "catchSpeed": 7.668101251631334,
+        "maxHeight": 3.7194349160010645,
+        "backboardHit": false,
+        "floorBounces": 10,
+        "travelDist": 18.778996195327327,
+        "floorTime": 1.345,
+        "floorImpactSpeed": 6.91921113250317,
+        "firstImpactTime": 0.915,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "short_player",
+      "params": {
+        "heightCm": 160,
+        "angleDeg": 52,
+        "aimDeg": 0,
+        "speed": 7.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "rim_miss",
+        "rimContacts": 1,
+        "floorPoint": [
+          0,
+          -0.018225273448227823
+        ],
+        "catchPoint": [
+          0,
+          -0.01408678114330108
+        ],
+        "catchTime": 1.326,
+        "catchSpeed": 6.0486900836022786,
+        "maxHeight": 3.7326787237501766,
+        "backboardHit": false,
+        "floorBounces": 10,
+        "travelDist": 15.850574058575015,
+        "floorTime": 1.524,
+        "floorImpactSpeed": 5.920712286334666,
+        "firstImpactTime": 0.96,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "tall_player",
+      "params": {
+        "heightCm": 220,
+        "angleDeg": 52,
+        "aimDeg": 0,
+        "speed": 7.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "backboard_miss",
+        "rimContacts": 2,
+        "floorPoint": [
+          0,
+          -0.06061632471238402
+        ],
+        "catchPoint": [
+          0,
+          -0.06008183510914343
+        ],
+        "catchTime": 2.571,
+        "catchSpeed": 5.937560331540849,
+        "maxHeight": 4.482678723750176,
+        "backboardHit": true,
+        "floorBounces": 10,
+        "travelDist": 18.203676737943802,
+        "floorTime": 2.7720000000000002,
+        "floorImpactSpeed": 5.860325791299045,
+        "firstImpactTime": 0.999,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "short_player_flatter",
+      "params": {
+        "heightCm": 160,
+        "angleDeg": 55,
+        "aimDeg": 0,
+        "speed": 7,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "airball",
+        "rimContacts": 0,
+        "floorPoint": [
+          0,
+          1.3074352953103057
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 3.635308336562292,
+        "backboardHit": false,
+        "floorBounces": 10,
+        "travelDist": 18.39375983179406,
+        "floorTime": 1.429,
+        "floorImpactSpeed": 6.786813974582406,
+        "firstImpactTime": 1.429,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "tall_player_weak",
+      "params": {
+        "heightCm": 220,
+        "angleDeg": 40,
+        "aimDeg": 0,
+        "speed": 6,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "airball",
+        "rimContacts": 0,
+        "floorPoint": [
+          0,
+          1.2322864230979065
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 3.495520045841663,
+        "backboardHit": false,
+        "floorBounces": 10,
+        "travelDist": 17.8052626126883,
+        "floorTime": 1.226,
+        "floorImpactSpeed": 6.889384780665855,
+        "firstImpactTime": 1.226,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "high_spin_unused_in_v1",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 52,
+        "aimDeg": 0,
+        "speed": 7.5,
+        "spinRps": 6
+      },
+      "result": {
+        "outcome": "backboard_miss",
+        "rimContacts": 0,
+        "floorPoint": [
+          0,
+          -0.08816964941751944
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 4.107678723750174,
+        "backboardHit": true,
+        "floorBounces": 10,
+        "travelDist": 17.571764466741783,
+        "floorTime": 1.524,
+        "floorImpactSpeed": 6.377302142898277,
+        "firstImpactTime": 0.999,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "zero_spin",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 52,
+        "aimDeg": 0,
+        "speed": 7.5,
+        "spinRps": 0
+      },
+      "result": {
+        "outcome": "backboard_miss",
+        "rimContacts": 0,
+        "floorPoint": [
+          0,
+          -0.08816964941751944
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 4.107678723750174,
+        "backboardHit": true,
+        "floorBounces": 10,
+        "travelDist": 17.571764466741783,
+        "floorTime": 1.524,
+        "floorImpactSpeed": 6.377302142898277,
+        "firstImpactTime": 0.999,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "low_short_wide_left",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 35,
+        "aimDeg": -12,
+        "speed": 5.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "airball",
+        "rimContacts": 0,
+        "floorPoint": [
+          -0.9792930336938656,
+          0.38221149231866053
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 2.8751636422902527,
+        "backboardHit": false,
+        "floorBounces": 10,
+        "travelDist": 15.597957382287682,
+        "floorTime": 1.074,
+        "floorImpactSpeed": 6.39363662735367,
+        "firstImpactTime": 1.074,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "high_hard_wide_right",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 65,
+        "aimDeg": 12,
+        "speed": 9,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "out_of_bounds",
+        "rimContacts": 0,
+        "floorPoint": [
+          1.410435575507593,
+          2.4105776760126
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 5.632372399412159,
+        "backboardHit": false,
+        "floorBounces": 11,
+        "travelDist": 25.897551282172998,
+        "floorTime": 1.8820000000000001,
+        "floorImpactSpeed": 8.041651305054854,
+        "firstImpactTime": 1.8820000000000001,
+        "hitStepCap": false
+      }
+    },
+    {
+      "label": "midgrid",
+      "params": {
+        "heightCm": 190,
+        "angleDeg": 58,
+        "aimDeg": -6,
+        "speed": 8.5,
+        "spinRps": 2.5
+      },
+      "result": {
+        "outcome": "out_of_bounds",
+        "rimContacts": 0,
+        "floorPoint": [
+          -0.7694050752251649,
+          2.8759318664384512
+        ],
+        "catchPoint": null,
+        "catchTime": null,
+        "catchSpeed": null,
+        "maxHeight": 4.931723876061953,
+        "backboardHit": false,
+        "floorBounces": 11,
+        "travelDist": 24.125047381432,
+        "floorTime": 1.719,
+        "floorImpactSpeed": 7.356230221632157,
+        "firstImpactTime": 1.719,
+        "hitStepCap": false
+      }
+    }
+  ]
+}
