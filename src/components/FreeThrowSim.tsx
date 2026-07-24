@@ -156,6 +156,16 @@ export default function FreeThrowSim({
   onCanShootChange?: (canShoot: boolean) => void;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
+  // The scene-init effect below runs once (mount only) and its closures — in
+  // particular the post-landing reset setTimeout — would otherwise capture
+  // whatever `controls` was at that first render forever. Route reads through
+  // this ref instead so a reset always uses the slider values in effect when
+  // it fires, not the ones from mount time.
+  const controlsRef = useRef(controls);
+  useEffect(() => {
+    controlsRef.current = controls;
+  }, [controls]);
+
   const stateRef = useRef<{
     renderer?: THREE.WebGLRenderer;
     scene?: THREE.Scene;
@@ -780,10 +790,12 @@ export default function FreeThrowSim({
             floorBounces: result.floorBounces,
             travelDist: result.travelDist,
           });
-          // reset ball to FT line
+          // reset ball to FT line — uses controlsRef, not controls, so a
+          // height/angle/aim/power change made *during* the flight or its
+          // settle time is reflected in the reset position (see controlsRef above)
           setTimeout(() => {
             if (!st.ball) return;
-            const rp2 = releasePosition(controls);
+            const rp2 = releasePosition(controlsRef.current);
             st.ball.position.copy(rp2);
           }, 800);
         }
