@@ -1,5 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import { simulate, releaseHeightM, type ShotParams, type ShotResult } from "@/physics/core";
+import {
+  DEFAULT_BACKSPIN_RPS,
+  COURT_WIDTH_M,
+  HALF_COURT_LENGTH_M,
+  BASELINE_TO_RIM_M,
+  BACKBOARD_FROM_BASELINE_M,
+  LANE_LENGTH_M,
+  RIM_HEIGHT_M,
+  RIM_RADIUS_M,
+  RIM_TUBE_RADIUS_M,
+  BACKBOARD_W_M,
+  BACKBOARD_H_M,
+  BACKBOARD_Y_ABOVE_RIM_M,
+  BALL_RADIUS_M,
+} from "@/physics/constants";
 
 type Marker = { x: number; z: number };
 type Stats = {
@@ -34,12 +50,17 @@ export type SimControls = {
 const COURT_SCALE = 1; // meters -> world units (scene is 1:1 with real meters)
 const M = (meters: number) => meters * COURT_SCALE;
 
-const COURT_WIDTH = M(15); // full width of the half-court, sideline to sideline
-const HALF_COURT_LENGTH = M(14); // baseline to half-court line
-const BASELINE_TO_RIM = M(1.575); // baseline to the rim-center floor projection (FIBA)
-const BACKBOARD_FROM_BASELINE = M(1.2); // backboard set in from the baseline
+// Geometry values below are sourced from src/physics/constants.ts — the same
+// numbers the physics core (src/physics/core.ts) integrates against — so the
+// rendered rim/backboard/court can never drift out of sync with what the ball
+// actually collides with. Only purely decorative lines that physics never
+// touches (paint width, arcs, circles) stay as local-only constants here.
+const COURT_WIDTH = M(COURT_WIDTH_M); // full width of the half-court, sideline to sideline
+const HALF_COURT_LENGTH = M(HALF_COURT_LENGTH_M); // baseline to half-court line
+const BASELINE_TO_RIM = M(BASELINE_TO_RIM_M); // baseline to the rim-center floor projection (FIBA)
+const BACKBOARD_FROM_BASELINE = M(BACKBOARD_FROM_BASELINE_M); // backboard set in from the baseline
 const LANE_WIDTH = M(4.9); // free-throw lane (key) width, centered on the basket axis
-const LANE_LENGTH = M(5.8); // baseline to free-throw line
+const LANE_LENGTH = M(LANE_LENGTH_M); // baseline to free-throw line
 const FT_CIRCLE_R = M(1.8); // free-throw circle radius
 const THREE_PT_R = M(6.75); // three-point arc radius, constant all the way around
 const THREE_PT_SIDE_OFFSET = M(0.9); // corner straight segments, offset in from the sideline
@@ -51,25 +72,23 @@ const SIDELINE_X = COURT_WIDTH / 2;
 const LANE_HALF_WIDTH = LANE_WIDTH / 2;
 const THREE_PT_CORNER_X = SIDELINE_X - THREE_PT_SIDE_OFFSET;
 const BASELINE_Z = BASELINE_TO_RIM;
+// Free-throw line distance, derived from BASELINE_TO_RIM_M/LANE_LENGTH_M —
+// nets ~4.225 m to the rim, the same FIBA figure core.ts derives its release
+// point from. See the longer note in physics/constants.ts.
 const FT_LINE_Z = BASELINE_Z - LANE_LENGTH;
 const HALF_COURT_Z = BASELINE_Z - HALF_COURT_LENGTH;
 
 // Rim/backboard (meters)
-const RIM_Y = M(3.05);
-const RIM_RADIUS = M(0.225); // 45cm inner diameter (FIBA)
-const RIM_TUBE = M(0.02);
+const RIM_Y = M(RIM_HEIGHT_M);
+const RIM_RADIUS = M(RIM_RADIUS_M); // 45cm inner diameter (FIBA)
+const RIM_TUBE = M(RIM_TUBE_RADIUS_M);
 const RIM_Z = 0; // rim center z (reference point)
 const BACKBOARD_Z = BASELINE_Z - BACKBOARD_FROM_BASELINE; // backboard front face
-const BACKBOARD_W = M(1.8);
-const BACKBOARD_H = M(1.05);
-const BACKBOARD_Y = RIM_Y + M(0.375); // center (bottom edge sits 0.15m below rim: 2.90m)
+const BACKBOARD_W = M(BACKBOARD_W_M);
+const BACKBOARD_H = M(BACKBOARD_H_M);
+const BACKBOARD_Y = RIM_Y + M(BACKBOARD_Y_ABOVE_RIM_M); // center (bottom edge sits 0.15m below rim: 2.90m)
 
-const BALL_R = M(0.117); // size 6-ish
-const GRAVITY = -9.81;
-const FLOOR_RESTITUTION = 0.75;
-const RIM_RESTITUTION = 0.55;
-const BACKBOARD_COR = 0.8;
-const AIR_DRAG = 0.01;
+const BALL_R = M(BALL_RADIUS_M); // size 6-ish
 
 // Exactly two fixed camera angles, hard-switched (no in-between motion): the default
 // behind-the-shooter view, and an overhead "hoop cam" used while the shot is in flight.
@@ -78,134 +97,47 @@ const CAM_ORIGINAL_TARGET = new THREE.Vector3(0, 2.6, 0);
 const CAM_HOOP_POS = new THREE.Vector3(0, RIM_Y + 3.2, RIM_Z - 1.0);
 const CAM_HOOP_TARGET = new THREE.Vector3(0, RIM_Y - 1.5, RIM_Z + 1.5);
 
-// Collide sphere with static torus (ring in horizontal plane at y=RIM_Y, centered origin xz)
-function collideRim(pos: THREE.Vector3, vel: THREE.Vector3): boolean {
-  const dxz = Math.hypot(pos.x, pos.z - RIM_Z);
-  if (dxz < 1e-6) return false;
-  // nearest point on the ring circle
-  const nx = (pos.x / dxz) * RIM_RADIUS;
-  const nz = RIM_Z + ((pos.z - RIM_Z) / dxz) * RIM_RADIUS;
-  const ny = RIM_Y;
-  const dx = pos.x - nx;
-  const dy = pos.y - ny;
-  const dz = pos.z - nz;
-  const d = Math.hypot(dx, dy, dz);
-  const minD = BALL_R + RIM_TUBE;
-  if (d < minD && d > 1e-6) {
-    const nxN = dx / d;
-    const nyN = dy / d;
-    const nzN = dz / d;
-    // push out
-    const push = minD - d;
-    pos.x += nxN * push;
-    pos.y += nyN * push;
-    pos.z += nzN * push;
-    const vn = vel.x * nxN + vel.y * nyN + vel.z * nzN;
-    if (vn < 0) {
-      vel.x -= (1 + RIM_RESTITUTION) * vn * nxN;
-      vel.y -= (1 + RIM_RESTITUTION) * vn * nyN;
-      vel.z -= (1 + RIM_RESTITUTION) * vn * nzN;
-    }
-    return true;
-  }
-  return false;
-}
-
-// Ball passing cleanly through the hoop opening loses horizontal speed to the net
-// (real nets absorb a made shot's forward momentum, which is why swishes drop almost
-// straight down instead of sailing on past the backboard support behind the hoop).
-const NET_DROP = 0.4; // matches the drawn net cone height below the rim
-const NET_DRAG_RATE = 40;
-function applyNetResistance(pos: THREE.Vector3, vel: THREE.Vector3, h: number) {
-  const dxz = Math.hypot(pos.x, pos.z - RIM_Z);
-  if (vel.y < 0 && dxz < RIM_RADIUS - BALL_R && pos.y < RIM_Y && pos.y > RIM_Y - NET_DROP) {
-    const damp = Math.exp(-NET_DRAG_RATE * h);
-    vel.x *= damp;
-    vel.z *= damp;
-  }
-}
-
-function collideBackboard(pos: THREE.Vector3, vel: THREE.Vector3, prevZ: number): boolean {
-  // Backboard is a plane at z = BACKBOARD_Z, extents in x/y
-  const withinX = Math.abs(pos.x) < BACKBOARD_W / 2 + BALL_R;
-  const withinY = pos.y > BACKBOARD_Y - BACKBOARD_H / 2 - BALL_R && pos.y < BACKBOARD_Y + BACKBOARD_H / 2 + BALL_R;
-  if (!withinX || !withinY) return false;
-  // Ball approaches from -z (shooter side). Front face is at z = BACKBOARD_Z (front).
-  // Crossing test instead of a fixed epsilon shell: fires whenever the ball's leading
-  // edge was behind the face last substep and is at/past it now, so a fast ball can't
-  // tunnel through by jumping past a fixed-width band in a single substep.
-  const front = BACKBOARD_Z;
-  const wasInFront = prevZ + BALL_R <= front;
-  const isPast = pos.z + BALL_R > front;
-  if (wasInFront && isPast && vel.z > 0) {
-    pos.z = front - BALL_R;
-    vel.z = -vel.z * BACKBOARD_COR;
-    vel.x *= 0.9;
-    vel.y *= 0.9;
-    return true;
-  }
-  return false;
-}
-
-function collideFloor(pos: THREE.Vector3, vel: THREE.Vector3): boolean {
-  if (pos.y - BALL_R < 0) {
-    pos.y = BALL_R;
-    if (vel.y < 0) {
-      vel.y = -vel.y * FLOOR_RESTITUTION;
-      vel.x *= 0.8;
-      vel.z *= 0.8;
-      return true;
-    }
-  }
-  return false;
-}
-
-function collideWalls(pos: THREE.Vector3, vel: THREE.Vector3) {
-  const bounds = { xMin: -SIDELINE_X - 0.5, xMax: SIDELINE_X + 0.5, zMin: HALF_COURT_Z - 1, zMax: BASELINE_Z + 1.5, yMax: 8 };
-  if (pos.x - BALL_R < bounds.xMin) { pos.x = bounds.xMin + BALL_R; vel.x = -vel.x * 0.6; }
-  if (pos.x + BALL_R > bounds.xMax) { pos.x = bounds.xMax - BALL_R; vel.x = -vel.x * 0.6; }
-  if (pos.z - BALL_R < bounds.zMin) { pos.z = bounds.zMin + BALL_R; vel.z = -vel.z * 0.6; }
-  if (pos.z + BALL_R > bounds.zMax) { pos.z = bounds.zMax - BALL_R; vel.z = -vel.z * 0.6; }
-  if (pos.y + BALL_R > bounds.yMax) { pos.y = bounds.yMax - BALL_R; vel.y = -Math.abs(vel.y) * 0.6; }
-}
-
-function computeInitialVelocity(c: SimControls, releasePos: THREE.Vector3) {
-  const angle = (c.angleDeg * Math.PI) / 180;
-  const aim = (c.aimDeg * Math.PI) / 180;
-  const v = c.power;
-  // shooter faces +z toward hoop
-  const horizontal = v * Math.cos(angle);
-  return new THREE.Vector3(horizontal * Math.sin(aim), v * Math.sin(angle), horizontal * Math.cos(aim));
-}
+// All physics (rim/backboard/floor collision, drag, net resistance) now lives
+// in src/physics/core.ts's simulate() — one function used for both the single
+// shot below and the trajectory preview, so the two can never diverge from
+// each other (or from the Phase 3 sweep engine, which will call the same
+// function). Nothing in this file steps velocity/position itself anymore.
 
 function releasePosition(c: SimControls) {
-  const h = c.playerHeightCm / 100;
-  const releaseY = h * 1.25; // above head
-  return new THREE.Vector3(0, releaseY, FT_LINE_Z);
+  return new THREE.Vector3(0, releaseHeightM(c.playerHeightCm), FT_LINE_Z);
 }
 
-// Trajectory preview: simulate without collisions except stop at backboard/rim contact
-function predictTrajectory(c: SimControls): { points: THREE.Vector3[]; hitsRim: boolean } {
-  const pos = releasePosition(c);
-  const vel = computeInitialVelocity(c, pos);
-  const pts: THREE.Vector3[] = [pos.clone()];
-  const dt = 1 / 120;
-  let hitsRim = false;
-  for (let i = 0; i < 400; i++) {
-    vel.y += GRAVITY * dt;
-    pos.addScaledVector(vel, dt);
-    pts.push(pos.clone());
-    // rim proximity check
-    const dxz = Math.hypot(pos.x, pos.z - RIM_Z);
-    const dToRing = Math.hypot(dxz - RIM_RADIUS, pos.y - RIM_Y);
-    if (dToRing < BALL_R + RIM_TUBE + 0.02) { hitsRim = true; break; }
-    // backboard
-    if (pos.z > BACKBOARD_Z - BALL_R && Math.abs(pos.x) < BACKBOARD_W / 2 && Math.abs(pos.y - BACKBOARD_Y) < BACKBOARD_H / 2) {
-      break;
-    }
-    if (pos.y < 0) break;
+function shotParamsFromControls(c: SimControls): ShotParams {
+  return {
+    heightCm: c.playerHeightCm,
+    angleDeg: c.angleDeg,
+    aimDeg: c.aimDeg,
+    speed: c.power,
+    spinRps: DEFAULT_BACKSPIN_RPS,
+  };
+}
+
+// A trajectory whose result never touches the rim, backboard, or floor within
+// SIM_MAX_DURATION_S doesn't happen in practice (gravity always brings it
+// down), so firstImpactTime is treated as always present here; the preview
+// line simply isn't truncated in that theoretical edge case.
+function previewPoints(result: ShotResult): THREE.Vector3[] {
+  const cutoff = result.firstImpactTime ?? Infinity;
+  const pts: THREE.Vector3[] = [];
+  for (let i = 0; i < result.trajectory.length; i += 4) {
+    const t = result.trajectory[i];
+    pts.push(new THREE.Vector3(result.trajectory[i + 1], result.trajectory[i + 2], result.trajectory[i + 3]));
+    if (t >= cutoff) break;
   }
-  return { points: pts, hitsRim };
+  return pts;
+}
+
+// Whether the shot's flight ever actually reaches the hoop apparatus (rim or
+// backboard) rather than sailing wide/short — used to gate the Shoot button
+// and color the preview line, matching the old predictTrajectory-based gate's
+// intent without keeping a second, cruder physics pass around just for it.
+function reachesHoop(result: ShotResult): boolean {
+  return result.outcome === "made" || result.outcome === "rim_miss" || result.outcome === "backboard_miss";
 }
 
 export default function FreeThrowSim({
@@ -229,28 +161,20 @@ export default function FreeThrowSim({
     scene?: THREE.Scene;
     camera?: THREE.PerspectiveCamera;
     ball?: THREE.Mesh;
-    ballVel: THREE.Vector3;
-    ballSpin: THREE.Vector3;
     flying: boolean;
-    stats: Stats;
+    result?: ShotResult; // precomputed by simulate() when the shot is fired; the rAF loop only ever plays it back
     markerGroup?: THREE.Group;
     trajLine?: THREE.Line;
-    startTime: number;
-    lastPos: THREE.Vector3;
-    landed: boolean;
+    playStartTime: number; // performance.now() ms when the current flight's playback started
+    trajCursor: number; // index (in samples, not floats) into result.trajectory, advances monotonically during playback
+    landingFired: boolean; // whether onLanding has fired for the in-progress flight
     canShoot: boolean;
   }>({
-    ballVel: new THREE.Vector3(),
-    ballSpin: new THREE.Vector3(),
     flying: false,
     canShoot: true,
-    stats: {
-      landingX: 0, landingZ: 0, airTime: 0, impactVel: 0, maxHeight: 0,
-      rimContacts: 0, backboardHit: false, floorBounces: 0, travelDist: 0,
-    },
-    startTime: 0,
-    lastPos: new THREE.Vector3(),
-    landed: false,
+    playStartTime: 0,
+    trajCursor: 0,
+    landingFired: false,
   });
 
   // init scene once
@@ -586,8 +510,8 @@ export default function FreeThrowSim({
     // is to close the FIBA-standard 15cm gap between the board and the rim's near edge
     // at rim height (305cm), so the ring reads as bolted on rather than floating in
     // front of the glass. Painted the same regulation rim orange as the ring itself.
-    // Purely cosmetic — collision physics is handled analytically in collideRim/
-    // collideBackboard and doesn't reference this mesh, so it stays untouched.
+    // Purely cosmetic — collision physics is handled analytically in
+    // src/physics/core.ts and doesn't reference this mesh, so it stays untouched.
     const boltMat = rimMat;
     const bracketMat = rimMat;
     const BRACKET_WIDTH = 0.15; // ~15cm wide
@@ -800,57 +724,62 @@ export default function FreeThrowSim({
       const dt = Math.min((now - last) / 1000, 1 / 30);
       last = now;
       const st = stateRef.current;
-      if (st.flying && st.ball) {
-        // Adaptive substepping: at high ball speed a fixed substep count can let the ball
-        // travel farther in one step than the rim's thin collision shell, tunneling straight
-        // through it undetected. Sizing substeps off the current speed keeps each step short
-        // enough that the rim (and backboard/floor) collision checks can't be skipped over.
-        const speed = st.ballVel.length();
-        const maxSubstepDist = 0.015;
-        const sub = Math.min(64, Math.max(4, Math.ceil((speed * dt) / maxSubstepDist)));
-        const h = dt / sub;
-        for (let s = 0; s < sub; s++) {
-          // air drag
-          const v = st.ballVel;
-          const speed = v.length();
-          if (speed > 0) {
-            const drag = AIR_DRAG * speed * speed;
-            v.addScaledVector(v.clone().normalize(), -drag * h);
-          }
-          v.y += GRAVITY * h;
-          const prevZ = st.ball.position.z;
-          st.ball.position.addScaledVector(v, h);
-          applyNetResistance(st.ball.position, v, h);
-          // collisions
-          if (collideBackboard(st.ball.position, v, prevZ)) {
-            st.stats.backboardHit = true;
-          }
-          if (collideRim(st.ball.position, v)) {
-            st.stats.rimContacts += 1;
-          }
-          if (collideFloor(st.ball.position, v)) {
-            st.stats.floorBounces += 1;
-            if (!st.landed) {
-              st.landed = true;
-              st.stats.landingX = st.ball.position.x;
-              st.stats.landingZ = st.ball.position.z;
-              st.stats.airTime = (now - st.startTime) / 1000;
-              st.stats.impactVel = v.length();
-              onLanding({ x: st.ball.position.x, z: st.ball.position.z });
-            }
-          }
-          collideWalls(st.ball.position, v);
-          st.stats.travelDist += st.ball.position.distanceTo(st.lastPos);
-          st.lastPos.copy(st.ball.position);
-          if (st.ball.position.y > st.stats.maxHeight) st.stats.maxHeight = st.ball.position.y;
+      if (st.flying && st.ball && st.result) {
+        // Physics is fully precomputed by simulate() at shoot time (see the
+        // shootTrigger effect below); this loop only interpolates the ball's
+        // position along that fixed trajectory by elapsed real time, so
+        // playback speed can never feed back into the physics itself.
+        const traj = st.result.trajectory;
+        const sampleCount = traj.length / 4;
+        const elapsed = (now - st.playStartTime) / 1000;
+
+        while (st.trajCursor < sampleCount - 2 && traj[(st.trajCursor + 1) * 4] <= elapsed) {
+          st.trajCursor++;
         }
-        // rotation from velocity
-        st.ball.rotation.x += st.ballVel.z * dt * 4;
-        st.ball.rotation.z -= st.ballVel.x * dt * 4;
-        // stop check
-        if (st.ballVel.length() < 0.3 && st.ball.position.y < BALL_R + 0.01) {
+        const i0 = st.trajCursor * 4;
+        const i1 = Math.min(st.trajCursor + 1, sampleCount - 1) * 4;
+        const t0 = traj[i0];
+        const t1 = traj[i1];
+        const segDur = t1 - t0;
+        const frac = segDur > 0 ? Math.min(1, Math.max(0, (elapsed - t0) / segDur)) : 1;
+
+        const x0 = traj[i0 + 1], y0 = traj[i0 + 2], z0 = traj[i0 + 3];
+        const x1 = traj[i1 + 1], y1 = traj[i1 + 2], z1 = traj[i1 + 3];
+        st.ball.position.set(x0 + (x1 - x0) * frac, y0 + (y1 - y0) * frac, z0 + (z1 - z0) * frac);
+
+        // Rolling animation: approximate velocity via the current segment's
+        // finite difference — visual only, doesn't feed back into physics.
+        if (segDur > 0) {
+          const vx = (x1 - x0) / segDur;
+          const vz = (z1 - z0) / segDur;
+          st.ball.rotation.x += vz * dt * 4;
+          st.ball.rotation.z -= vx * dt * 4;
+        }
+
+        // Fire the landing marker at the same moment in playback that the
+        // real physics first touched the floor, not at the end of the flight.
+        if (!st.landingFired && st.result.floorTime !== null && elapsed >= st.result.floorTime) {
+          st.landingFired = true;
+          const [fx, fz] = st.result.floorPoint!;
+          onLanding({ x: fx, z: fz });
+        }
+
+        const finalT = traj[(sampleCount - 1) * 4];
+        if (elapsed >= finalT) {
+          const result = st.result;
+          st.ball.position.set(traj[(sampleCount - 1) * 4 + 1], traj[(sampleCount - 1) * 4 + 2], traj[(sampleCount - 1) * 4 + 3]);
           st.flying = false;
-          onStats({ ...st.stats });
+          onStats({
+            landingX: result.floorPoint?.[0] ?? 0,
+            landingZ: result.floorPoint?.[1] ?? 0,
+            airTime: result.floorTime ?? 0,
+            impactVel: result.floorImpactSpeed ?? 0,
+            maxHeight: result.maxHeight,
+            rimContacts: result.rimContacts,
+            backboardHit: result.backboardHit,
+            floorBounces: result.floorBounces,
+            travelDist: result.travelDist,
+          });
           // reset ball to FT line
           setTimeout(() => {
             if (!st.ball) return;
@@ -901,15 +830,17 @@ export default function FreeThrowSim({
       const rp = releasePosition(controls);
       st.ball.position.copy(rp);
     }
-    const { points, hitsRim } = predictTrajectory(controls);
+    const result = simulate(shotParamsFromControls(controls));
+    const points = previewPoints(result);
+    const canReach = reachesHoop(result);
     const geo = new THREE.BufferGeometry().setFromPoints(points);
     st.trajLine.geometry.dispose();
     st.trajLine.geometry = geo;
-    (st.trajLine.material as THREE.LineDashedMaterial).color.set(hitsRim ? 0x1e90ff : 0xff3333);
+    (st.trajLine.material as THREE.LineDashedMaterial).color.set(canReach ? 0x1e90ff : 0xff3333);
     st.trajLine.computeLineDistances();
-    if (st.canShoot !== hitsRim) {
-      st.canShoot = hitsRim;
-      onCanShootChange?.(hitsRim);
+    if (st.canShoot !== canReach) {
+      st.canShoot = canReach;
+      onCanShootChange?.(canReach);
     }
   }, [controls, onCanShootChange]);
 
@@ -920,15 +851,11 @@ export default function FreeThrowSim({
     if (!st.ball || st.flying || !st.canShoot) return;
     const rp = releasePosition(controls);
     st.ball.position.copy(rp);
-    st.ballVel.copy(computeInitialVelocity(controls, rp));
+    st.result = simulate(shotParamsFromControls(controls));
     st.flying = true;
-    st.landed = false;
-    st.startTime = performance.now();
-    st.lastPos.copy(rp);
-    st.stats = {
-      landingX: 0, landingZ: 0, airTime: 0, impactVel: 0, maxHeight: rp.y,
-      rimContacts: 0, backboardHit: false, floorBounces: 0, travelDist: 0,
-    };
+    st.landingFired = false;
+    st.playStartTime = performance.now();
+    st.trajCursor = 0;
   }, [shootTrigger]);
 
   // Sync markers
