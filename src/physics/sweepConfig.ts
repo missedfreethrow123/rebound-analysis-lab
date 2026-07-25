@@ -80,3 +80,24 @@ export function splitEvenly<T>(values: T[], workerCount: number): T[][] {
 export function pickRecordPoint(config: SweepConfig, result: ShotResult): [number, number] | null {
   return config.record === "catchPoint" ? result.catchPoint : result.floorPoint;
 }
+
+// Cache key for a completed sweep, including PHYSICS_VERSION — without it, a
+// cached sweep from before a core.ts physics change would silently show a
+// stale map next to the (now different) single-shot physics, since nothing
+// else about the config would have changed to invalidate it.
+function rangeKey(r: RangeConfig): string {
+  return `${r.min}:${r.max}:${r.step}`;
+}
+
+export function sweepCacheKey(config: SweepConfig): string {
+  return [
+    `v${PHYSICS_VERSION}`,
+    `h${config.heightCm}`,
+    `spin${config.spinRps}`,
+    `angle${rangeKey(config.angle)}`,
+    `aim${rangeKey(config.aim)}`,
+    `speed${rangeKey(config.speed)}`,
+    `rec${config.record}`,
+    `excl${config.excludeMade}`,
+  ].join("|");
+}

@@ -13,7 +13,16 @@ import {
   addTotals,
   computeStats,
 } from "./sweepGrid";
-import { expandRange, rangeStepCount, totalShotCount, splitEvenly, defaultSweepConfig, DEFAULT_SWEEP_RANGES } from "./sweepConfig";
+import {
+  expandRange,
+  rangeStepCount,
+  totalShotCount,
+  splitEvenly,
+  defaultSweepConfig,
+  DEFAULT_SWEEP_RANGES,
+  sweepCacheKey,
+  PHYSICS_VERSION,
+} from "./sweepConfig";
 import { BASELINE_TO_RIM_M, COURT_WIDTH_M } from "./constants";
 
 describe("sweepConfig", () => {
@@ -52,6 +61,24 @@ describe("sweepConfig", () => {
     const slices = splitEvenly([1, 2, 3], 8);
     expect(slices.length).toBe(3);
     expect(slices.flat()).toEqual([1, 2, 3]);
+  });
+
+  it("sweepCacheKey is stable for identical configs and changes with any field, including PHYSICS_VERSION", () => {
+    const a = defaultSweepConfig(190);
+    const b = defaultSweepConfig(190);
+    expect(sweepCacheKey(a)).toBe(sweepCacheKey(b));
+
+    const differentHeight = { ...a, heightCm: 200 };
+    const differentSpin = { ...a, spinRps: 3 };
+    const differentAngle = { ...a, angle: { ...a.angle, step: 1 } };
+    const differentRecord = { ...a, record: "floorPoint" as const };
+    const differentExclude = { ...a, excludeMade: false };
+    const keys = [a, differentHeight, differentSpin, differentAngle, differentRecord, differentExclude].map(sweepCacheKey);
+    expect(new Set(keys).size).toBe(keys.length); // every variant produces a distinct key
+
+    // A cache keyed without PHYSICS_VERSION would silently serve a stale map
+    // after a core.ts physics change -- the key must embed it directly.
+    expect(sweepCacheKey(a)).toContain(`v${PHYSICS_VERSION}`);
   });
 });
 
