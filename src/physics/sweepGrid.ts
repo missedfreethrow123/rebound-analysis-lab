@@ -17,7 +17,12 @@ export interface SweepGrid {
   nx: number;
   ny: number;
   cellSizeM: number;
-  counts: Uint32Array; // NX*NY, index iy*NX+ix
+  counts: Uint32Array; // NX*NY, index iy*NX+ix — every recorded miss, regardless of whether it touched the rim
+  // Of counts[i], how many also had rimContacts > 0. Metadata, not a filter —
+  // the default map shows every recorded miss (counts); this is what a
+  // toggleable "rim contact" layer renders from in Phase 4, e.g. as
+  // rimTouchCounts[i]/counts[i] per cell, without needing a second sweep.
+  rimTouchCounts: Uint32Array;
   params: Float32Array; // NX*NY*4: [angleDeg, aimDeg, speed, spinRps] for the first recorded sample in that cell, NaN if never set
 }
 
@@ -29,6 +34,7 @@ export function createEmptyGrid(): SweepGrid {
     ny: GRID_NY,
     cellSizeM: GRID_CELL_SIZE_M,
     counts: new Uint32Array(GRID_NX * GRID_NY),
+    rimTouchCounts: new Uint32Array(GRID_NX * GRID_NY),
     params,
   };
 }
@@ -68,11 +74,13 @@ export function recordSample(
   aimDeg: number,
   speed: number,
   spinRps: number,
+  touchedRim: boolean,
 ): boolean {
   const cell = worldToCell(x, z);
   if (!cell) return false;
   const idx = cellIndex(cell.ix, cell.iy);
   grid.counts[idx]++;
+  if (touchedRim) grid.rimTouchCounts[idx]++;
   if (!everSet[idx]) {
     everSet[idx] = 1;
     const o = idx * 4;
@@ -91,6 +99,7 @@ export function recordSample(
 export function mergeGrid(target: SweepGrid, targetEverSet: Uint8Array, delta: SweepGrid): void {
   for (let i = 0; i < target.counts.length; i++) {
     target.counts[i] += delta.counts[i];
+    target.rimTouchCounts[i] += delta.rimTouchCounts[i];
     if (!targetEverSet[i]) {
       const o = i * 4;
       if (!Number.isNaN(delta.params[o])) {

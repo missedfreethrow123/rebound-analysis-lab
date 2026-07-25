@@ -86,7 +86,7 @@ export interface ShotResult {
   trajectory: Float32Array; // flat [t,x,y,z, t,x,y,z, ...] for animation, decimated except collision moments, which are always sampled exactly (see core.ts)
   rimContacts: number;
   floorPoint: [number, number] | null; // first floor contact, metres
-  catchPoint: [number, number] | null; // where it descends through CATCH_HEIGHT_M after the *last* rim contact
+  catchPoint: [number, number] | null; // where it last descends through CATCH_HEIGHT_M before landing — defined for every miss (airball, backboard-only, or rim-touching), not just rim contacts; null only if the ball never reaches CATCH_HEIGHT_M while still airborne (e.g. an already-low trajectory)
   catchTime: number | null; // seconds from release
   catchSpeed: number | null; // m/s at that moment
 
@@ -290,7 +290,14 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
   let maxHeight = posY;
   let travelDist = 0;
 
-  let awaitingCatch = false;
+  // Defined for every miss, not just rim-touching ones: armed from release, so
+  // an airball or backboard-only miss still gets a catch point on its way
+  // down. A rim or backboard contact re-arms it (clearing any earlier
+  // candidate), since the ball's path just changed and the catch point should
+  // reflect where it *actually* comes down, not a pre-bounce guess. Stops
+  // being armed once the ball reaches the floor (see the floor block below) —
+  // there's no more catching it after that.
+  let awaitingCatch = true;
   let catchPoint: [number, number] | null = null;
   let catchTime: number | null = null;
   let catchSpeed: number | null = null;
@@ -412,6 +419,13 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
           spinY = resolved.spinY;
           spinZ = resolved.spinZ;
           backboardHit = true;
+          // Re-arm the catch point: the ball's path just changed, so any
+          // earlier candidate (from before this bounce) no longer reflects
+          // where it actually comes down.
+          awaitingCatch = true;
+          catchPoint = null;
+          catchTime = null;
+          catchSpeed = null;
           if (firstImpactTime === null) firstImpactTime = t;
           maybeSample(t);
         }
@@ -496,9 +510,11 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
       }
     }
 
-    // Catch point: first descent through CATCH_HEIGHT_M after the most recent
-    // rim contact (invalidated and re-armed by any later rim contact above).
-    if (awaitingCatch) {
+    // Catch point: descent through CATCH_HEIGHT_M, defined for every miss —
+    // armed from release (re-armed by any rim/backboard contact above), and
+    // stops once the ball reaches the floor (floorPoint set): after that
+    // there's no more catching it, only bouncing.
+    if (awaitingCatch && floorPoint === null) {
       const crossedCatchHeight = prevY >= CATCH_HEIGHT_M && posY < CATCH_HEIGHT_M;
       if (velY < 0 && crossedCatchHeight) {
         catchPoint = [posX, posZ];

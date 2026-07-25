@@ -257,4 +257,32 @@ describe("Phase 2 physics", () => {
     const result = simulate(wellAimed);
     expect(result.outcome).toBe("made");
   });
+
+  it("catchPoint is defined for every miss, not just rim-touching ones", () => {
+    const airball: ShotParams = { heightCm: 190, angleDeg: 45, aimDeg: 0, speed: 5.5, spinRps: 2.5 };
+    const airballResult = simulate(airball, { recordTrajectory: false });
+    expect(airballResult.outcome).toBe("airball");
+    expect(airballResult.rimContacts).toBe(0);
+    expect(airballResult.catchPoint).not.toBeNull();
+
+    const backboardOnly: ShotParams = { heightCm: 190, angleDeg: 52, aimDeg: 0, speed: 7.65, spinRps: 2.5 };
+    const backboardResult = simulate(backboardOnly, { recordTrajectory: false });
+    expect(backboardResult.outcome).toBe("backboard_miss");
+    expect(backboardResult.rimContacts).toBe(0);
+    expect(backboardResult.catchPoint).not.toBeNull();
+  });
+
+  it("a rim or backboard contact re-arms the catch point instead of keeping a pre-bounce guess", () => {
+    // The default slider shot touches the rim multiple times before the
+    // backboard: catchPoint should reflect the descent *after* whichever of
+    // those came last, not an early candidate invalidated by a later bounce.
+    const result = simulate({ heightCm: 190, angleDeg: 52, aimDeg: 0, speed: 7.5, spinRps: 2.5 }, { recordTrajectory: false });
+    expect(result.outcome).toBe("backboard_miss");
+    expect(result.rimContacts).toBeGreaterThan(0);
+    expect(result.catchPoint).not.toBeNull();
+    expect(result.catchTime).not.toBeNull();
+    expect(result.floorTime).not.toBeNull();
+    // The catch point must come down before the ball reaches the floor.
+    expect(result.catchTime!).toBeLessThan(result.floorTime!);
+  });
 });

@@ -84,7 +84,7 @@ function runSweep(msg: SweepWorkerStartMessage): void {
       totals: outTotals,
       shotsThisFlush: outShots,
     };
-    self.postMessage(message, [outGrid.counts.buffer, outGrid.params.buffer]);
+    self.postMessage(message, [outGrid.counts.buffer, outGrid.rimTouchCounts.buffer, outGrid.params.buffer]);
     // The transferred buffers are now neutered on this side — allocate fresh
     // ones to keep accumulating. `everSet` is deliberately NOT reset: it's
     // this worker's memory of which cells it has already recorded a
@@ -114,7 +114,7 @@ function runSweep(msg: SweepWorkerStartMessage): void {
         if (!(msg.excludeMade && isMade)) {
           const point = msg.record === "catchPoint" ? result.catchPoint : result.floorPoint;
           if (point) {
-            recordSample(grid, everSet, point[0], point[1], angleDeg, aimDeg, speed, msg.spinRps);
+            recordSample(grid, everSet, point[0], point[1], angleDeg, aimDeg, speed, msg.spinRps, result.rimContacts > 0);
             totals.recordedCount++;
             if (point[1] < 0) totals.nearSideCount++;
             else totals.farSideCount++;

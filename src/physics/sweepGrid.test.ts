@@ -99,8 +99,8 @@ describe("sweepGrid recording and merging", () => {
     const everSet = new Uint8Array(GRID_NX * GRID_NY);
     const { x, z } = cellCenterWorld(10, 10);
 
-    recordSample(grid, everSet, x, z, 50, 0, 7.2, 2.5);
-    recordSample(grid, everSet, x, z, 55, 1, 7.5, 2.5); // second hit, same cell
+    recordSample(grid, everSet, x, z, 50, 0, 7.2, 2.5, false);
+    recordSample(grid, everSet, x, z, 55, 1, 7.5, 2.5, false); // second hit, same cell
 
     const idx = cellIndex(10, 10);
     expect(grid.counts[idx]).toBe(2);
@@ -110,12 +110,26 @@ describe("sweepGrid recording and merging", () => {
   it("samples outside the grid are silently dropped", () => {
     const grid = createEmptyGrid();
     const everSet = new Uint8Array(GRID_NX * GRID_NY);
-    const recorded = recordSample(grid, everSet, 1000, 1000, 50, 0, 7.2, 2.5);
+    const recorded = recordSample(grid, everSet, 1000, 1000, 50, 0, 7.2, 2.5, false);
     expect(recorded).toBe(false);
     expect(grid.counts.reduce((a, b) => a + b, 0)).toBe(0);
   });
 
-  it("mergeGrid sums counts and preserves first-set params across deltas", () => {
+  it("tracks rim-contact as metadata alongside counts, not as a filter", () => {
+    const grid = createEmptyGrid();
+    const everSet = new Uint8Array(GRID_NX * GRID_NY);
+    const { x, z } = cellCenterWorld(30, 30);
+    const idx = cellIndex(30, 30);
+
+    recordSample(grid, everSet, x, z, 50, 0, 7.2, 2.5, true); // touched the rim
+    recordSample(grid, everSet, x, z, 45, 0, 6.5, 2.5, false); // airball landing in the same cell
+    recordSample(grid, everSet, x, z, 55, 0, 8.0, 2.5, false); // backboard-only landing in the same cell
+
+    expect(grid.counts[idx]).toBe(3); // every miss is counted
+    expect(grid.rimTouchCounts[idx]).toBe(1); // only the rim-touching one flagged
+  });
+
+  it("mergeGrid sums counts, rimTouchCounts, and preserves first-set params across deltas", () => {
     const target = createEmptyGrid();
     const targetEverSet = new Uint8Array(GRID_NX * GRID_NY);
     const { x, z } = cellCenterWorld(20, 20);
@@ -123,15 +137,16 @@ describe("sweepGrid recording and merging", () => {
 
     const delta1 = createEmptyGrid();
     const everSet1 = new Uint8Array(GRID_NX * GRID_NY);
-    recordSample(delta1, everSet1, x, z, 40, -1, 6.0, 2.5);
+    recordSample(delta1, everSet1, x, z, 40, -1, 6.0, 2.5, true);
     mergeGrid(target, targetEverSet, delta1);
 
     const delta2 = createEmptyGrid();
     const everSet2 = new Uint8Array(GRID_NX * GRID_NY);
-    recordSample(delta2, everSet2, x, z, 60, 1, 8.0, 2.5); // a later worker/tick hitting the same cell
+    recordSample(delta2, everSet2, x, z, 60, 1, 8.0, 2.5, false); // a later worker/tick hitting the same cell
     mergeGrid(target, targetEverSet, delta2);
 
     expect(target.counts[idx]).toBe(2);
+    expect(target.rimTouchCounts[idx]).toBe(1);
     expect(target.params[idx * 4]).toBe(40); // first-merged delta's params win
   });
 });
@@ -145,8 +160,8 @@ describe("computeStats", () => {
     expect(nearCell.z).toBeLessThan(0);
     expect(farCell.z).toBeGreaterThanOrEqual(0);
 
-    for (let i = 0; i < 5; i++) recordSample(grid, everSet, nearCell.x, nearCell.z, 50, 0, 7.2, 2.5);
-    for (let i = 0; i < 2; i++) recordSample(grid, everSet, farCell.x, farCell.z, 50, 0, 7.2, 2.5);
+    for (let i = 0; i < 5; i++) recordSample(grid, everSet, nearCell.x, nearCell.z, 50, 0, 7.2, 2.5, false);
+    for (let i = 0; i < 2; i++) recordSample(grid, everSet, farCell.x, farCell.z, 50, 0, 7.2, 2.5, false);
 
     const totals = addTotals(emptyTotals(), {
       totalShots: 10,
@@ -173,8 +188,8 @@ describe("computeStats", () => {
     // one far away with a minority — the 50% radius should land at the near cell.
     const near = cellCenterWorld(76, 5); // close to x=0, z small (near the rim)
     const far = cellCenterWorld(140, 5); // far from the rim in x
-    for (let i = 0; i < 9; i++) recordSample(grid, everSet, near.x, near.z, 50, 0, 7.2, 2.5);
-    for (let i = 0; i < 1; i++) recordSample(grid, everSet, far.x, far.z, 50, 0, 7.2, 2.5);
+    for (let i = 0; i < 9; i++) recordSample(grid, everSet, near.x, near.z, 50, 0, 7.2, 2.5, false);
+    for (let i = 0; i < 1; i++) recordSample(grid, everSet, far.x, far.z, 50, 0, 7.2, 2.5, false);
 
     const totals = { ...emptyTotals(), totalShots: 10, recordedCount: 10 };
     const stats = computeStats(grid, totals);
