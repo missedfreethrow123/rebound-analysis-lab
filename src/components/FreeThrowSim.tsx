@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import { Button } from "@/components/ui/button";
 import { simulate, releaseHeightM, type ShotParams, type ShotResult } from "@/physics/core";
 import {
   DEFAULT_BACKSPIN_RPS,
@@ -16,6 +17,8 @@ import {
   BACKBOARD_Y_ABOVE_RIM_M,
   BALL_RADIUS_M,
 } from "@/physics/constants";
+import { GRID_NX, GRID_NY, GRID_CELL_SIZE_M, type SweepGrid } from "@/physics/sweepGrid";
+import { computeHeatmapPixels, type HeatmapLayer } from "@/rendering/heatmapPixels";
 
 type Marker = { x: number; z: number };
 type Stats = {
@@ -90,12 +93,27 @@ const BACKBOARD_Y = RIM_Y + M(BACKBOARD_Y_ABOVE_RIM_M); // center (bottom edge s
 
 const BALL_R = M(BALL_RADIUS_M); // size 6-ish
 
+// Heat map plane footprint — matches src/physics/sweepGrid.ts's grid exactly
+// (same cell size and axis convention), so a texture built from a SweepGrid
+// lines up with the court underneath it with no separate offset to get wrong.
+const HEATMAP_WIDTH = M(GRID_NX * GRID_CELL_SIZE_M); // world x span, centered on x=0
+const HEATMAP_DEPTH = M(GRID_NY * GRID_CELL_SIZE_M); // world z span, from the baseline back toward half-court
+const HEATMAP_CENTER_Z = BASELINE_Z - HEATMAP_DEPTH / 2;
+// Between the key's paint (y=0.002) and the painted lines (y=0.004): visible
+// over the court surface/paint, but the white lines still render crisply on
+// top of it, per HEATMAP_SPEC.md's "underneath the court lines... not on top."
+const HEATMAP_Y = 0.003;
+
 // Exactly two fixed camera angles, hard-switched (no in-between motion): the default
 // behind-the-shooter view, and an overhead "hoop cam" used while the shot is in flight.
 const CAM_ORIGINAL_POS = new THREE.Vector3(0, 3.0, FT_LINE_Z - 5.0);
 const CAM_ORIGINAL_TARGET = new THREE.Vector3(0, 2.6, 0);
 const CAM_HOOP_POS = new THREE.Vector3(0, RIM_Y + 3.2, RIM_Z - 1.0);
 const CAM_HOOP_TARGET = new THREE.Vector3(0, RIM_Y - 1.5, RIM_Z + 1.5);
+
+// Half the world-Z extent the top-down orthographic camera frames (so ~18m
+// vertically, comfortably covering the 14m heat map grid depth plus margin).
+const ORTHO_VIEW_HALF_HEIGHT = 9;
 
 // All physics (rim/backboard/floor collision, drag, net resistance) now lives
 // in src/physics/core.ts's simulate() — one function used for both the single
@@ -147,6 +165,7 @@ export default function FreeThrowSim({
   onLanding,
   markers,
   onCanShootChange,
+  heatmap,
 }: {
   controls: SimControls;
   shootTrigger: number;
@@ -154,6 +173,10 @@ export default function FreeThrowSim({
   onLanding: (m: Marker) => void;
   markers: Marker[];
   onCanShootChange?: (canShoot: boolean) => void;
+  // Optional: when set, renders a heat map texture under the court lines.
+  // Phase 5 owns actually running a sweep and passing its grid in here — this
+  // component only knows how to draw whatever grid it's given.
+  heatmap?: { grid: SweepGrid; opacity: number; layer: HeatmapLayer } | null;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   // The scene-init effect below runs once (mount only) and its closures — in
@@ -170,6 +193,8 @@ export default function FreeThrowSim({
     renderer?: THREE.WebGLRenderer;
     scene?: THREE.Scene;
     camera?: THREE.PerspectiveCamera;
+    orthoCamera?: THREE.OrthographicCamera;
+    cameraMode: "perspective" | "orthographic";
     ball?: THREE.Mesh;
     flying: boolean;
     result?: ShotResult; // precomputed by simulate() when the shot is fired; the rAF loop only ever plays it back
@@ -179,13 +204,19 @@ export default function FreeThrowSim({
     trajCursor: number; // index (in samples, not floats) into result.trajectory, advances monotonically during playback
     landingFired: boolean; // whether onLanding has fired for the in-progress flight
     canShoot: boolean;
+    heatmapMesh?: THREE.Mesh;
+    heatmapMaterial?: THREE.ShaderMaterial;
+    heatmapTexture?: THREE.DataTexture;
+    heatmapPixelData?: Uint8Array;
   }>({
     flying: false,
     canShoot: true,
+    cameraMode: "perspective",
     playStartTime: 0,
     trajCursor: 0,
     landingFired: false,
   });
+  const [cameraMode, setCameraMode] = useState<"perspective" | "orthographic">("perspective");
 
   // init scene once
   useEffect(() => {
@@ -202,6 +233,23 @@ export default function FreeThrowSim({
     const camera = new THREE.PerspectiveCamera(80, width / height, 0.1, 200);
     camera.position.copy(CAM_ORIGINAL_POS);
     camera.lookAt(CAM_ORIGINAL_TARGET);
+
+    // Orthographic top-down camera: an optional, user-toggled alternative to
+    // the perspective views above, so the heat map can be read square-on —
+    // no perspective foreshortening distorting cell sizes near vs. far from
+    // the camera. Framed on the heat map's own footprint (HEATMAP_CENTER_Z),
+    // with the hoop/baseline end at the top of the view.
+    const orthoCamera = new THREE.OrthographicCamera(
+      (-ORTHO_VIEW_HALF_HEIGHT * width) / height,
+      (ORTHO_VIEW_HALF_HEIGHT * width) / height,
+      ORTHO_VIEW_HALF_HEIGHT,
+      -ORTHO_VIEW_HALF_HEIGHT,
+      0.1,
+      100,
+    );
+    orthoCamera.up.set(0, 0, 1);
+    orthoCamera.position.set(0, 30, HEATMAP_CENTER_Z);
+    orthoCamera.lookAt(0, 0, HEATMAP_CENTER_Z);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -302,6 +350,80 @@ export default function FreeThrowSim({
     key.position.set(0, 0.002, (BASELINE_Z + FT_LINE_Z) / 2);
     key.receiveShadow = true;
     scene.add(key);
+
+    // Heat map layer: a single NX x NY-pixel canvas (150x140), scaled up to
+    // the court via the plane's world size rather than drawing one rectangle
+    // per cell (HEATMAP_SPEC.md: "Do not draw 21,000 rectangles"). Starts
+    // invisible/empty; the [heatmap] effect below fills it in and toggles
+    // visibility whenever the sweep result, opacity, or layer prop changes.
+    // texture.flipY = false because the canvas is filled with row 0 = grid
+    // iy = 0 = the baseline (see the [heatmap] effect) — with flipY at its
+    // default true, that mapping would come out mirrored front-to-back.
+    const heatmapPixelData = new Uint8Array(GRID_NX * GRID_NY * 4);
+    const heatmapTexture = new THREE.DataTexture(heatmapPixelData, GRID_NX, GRID_NY, THREE.RGBAFormat, THREE.UnsignedByteType);
+    heatmapTexture.flipY = false;
+    heatmapTexture.magFilter = THREE.LinearFilter;
+    // Trilinear filtering + real mipmaps: this texture is heavily minified
+    // (150x140 texels stretched over a 15x14m plane, often viewed from far
+    // away) and NPOT mipmapping needs WebGL2 (confirmed this renderer uses
+    // hardware WebGL2 via ANGLE, not the WebGL1-only NPOT restriction).
+    heatmapTexture.minFilter = THREE.LinearMipmapLinearFilter;
+    heatmapTexture.generateMipmaps = true;
+    heatmapTexture.wrapS = THREE.ClampToEdgeWrapping;
+    heatmapTexture.wrapT = THREE.ClampToEdgeWrapping;
+    heatmapTexture.needsUpdate = true;
+    // A custom opaque + alphaTest-style shader, deliberately NOT using real
+    // alpha blending (transparent:true). On this renderer/GPU combination
+    // (verified: hardware WebGL2 via ANGLE, not a software fallback),
+    // alpha-blending a varying-alpha texture over the court produced
+    // corrupted colour — cyan/pure-primary blotches with channel values
+    // (e.g. R=0 alongside G>230) that are mathematically impossible from any
+    // correct blend of this ramp's colours, confirmed via direct pixel
+    // readback at every stage (canvas/texture data was always correct; only
+    // the GPU's blended output was wrong). This reproduced identically across
+    // MeshBasicMaterial and a from-scratch ShaderMaterial, with premultiplied
+    // vs. straight alpha, with depthTest on/off, and independent of colour
+    // space/tone-mapping/fog/NPOT-mipmap settings — narrowing it to the
+    // GL_BLEND path itself on this hardware, not anything under this app's
+    // control. Rendering fully opaque (confirmed correct in isolation) and
+    // using `discard` for empty cells sidesteps GL blending entirely: the
+    // court shows through untouched where there's no data, and where there
+    // is, the colour is guaranteed correct.
+    //
+    // Trade-off: no true partial transparency, so the "opacity" control
+    // can't do real alpha blending either. Instead it raises the visibility
+    // threshold — turning it down hides the faintest (most spread-out) cells
+    // first and keeps only the hottest core, converging on "nothing visible"
+    // as it approaches 0, which reads similarly to fading out in practice.
+    const heatmapMaterial = new THREE.ShaderMaterial({
+      uniforms: { map: { value: heatmapTexture }, opacity: { value: 0.7 } },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D map;
+        uniform float opacity;
+        varying vec2 vUv;
+        void main() {
+          vec4 texColor = texture2D(map, vUv);
+          float threshold = mix(0.02, 0.95, 1.0 - opacity);
+          if (texColor.a < threshold) discard;
+          gl_FragColor = vec4(texColor.rgb, 1.0);
+        }
+      `,
+      transparent: false,
+      depthWrite: true,
+      depthTest: true,
+    });
+    const heatmapMesh = new THREE.Mesh(new THREE.PlaneGeometry(HEATMAP_WIDTH, HEATMAP_DEPTH), heatmapMaterial);
+    heatmapMesh.rotation.x = -Math.PI / 2;
+    heatmapMesh.position.set(0, HEATMAP_Y, HEATMAP_CENTER_Z);
+    heatmapMesh.visible = false;
+    scene.add(heatmapMesh);
 
     // Thick painted white line helper
     const paintLine = (pts: THREE.Vector3[], width = 0.06) => {
@@ -719,9 +841,14 @@ export default function FreeThrowSim({
     stateRef.current.renderer = renderer;
     stateRef.current.scene = scene;
     stateRef.current.camera = camera;
+    stateRef.current.orthoCamera = orthoCamera;
     stateRef.current.ball = ball;
     stateRef.current.markerGroup = markerGroup;
     stateRef.current.trajLine = trajLine;
+    stateRef.current.heatmapMesh = heatmapMesh;
+    stateRef.current.heatmapMaterial = heatmapMaterial;
+    stateRef.current.heatmapTexture = heatmapTexture;
+    stateRef.current.heatmapPixelData = heatmapPixelData;
 
     // Position ball at release
     const rp = releasePosition(controls);
@@ -801,9 +928,16 @@ export default function FreeThrowSim({
         }
       }
       if (st.ball) ballLight.position.set(st.ball.position.x, st.ball.position.y + 0.6, st.ball.position.z);
-      // Camera: exactly two fixed angles, hard-switched — overhead hoop cam while the
-      // shot is in flight, shooter view otherwise. No blending between them.
-      if (st.flying) {
+      // Camera: the orthographic top-down toggle overrides the normal
+      // shooter/hoop-cam switching entirely while active — it exists
+      // specifically to read the heat map square-on, not to also track the
+      // shot animation. Otherwise, exactly two fixed perspective angles,
+      // hard-switched — overhead hoop cam while the shot is in flight,
+      // shooter view otherwise. No blending between any of these.
+      let activeCamera: THREE.Camera = camera;
+      if (st.cameraMode === "orthographic") {
+        activeCamera = orthoCamera;
+      } else if (st.flying) {
         camera.position.copy(CAM_HOOP_POS);
         camera.lookAt(CAM_HOOP_TARGET);
       } else {
@@ -812,7 +946,7 @@ export default function FreeThrowSim({
       }
       const tick = (stateRef.current as any).__ledTick;
       if (tick) tick();
-      renderer.render(scene, camera);
+      renderer.render(scene, activeCamera);
       raf = requestAnimationFrame(animate);
     };
     animate();
@@ -823,6 +957,11 @@ export default function FreeThrowSim({
       renderer.setSize(w, h);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      orthoCamera.left = (-ORTHO_VIEW_HALF_HEIGHT * w) / h;
+      orthoCamera.right = (ORTHO_VIEW_HALF_HEIGHT * w) / h;
+      orthoCamera.top = ORTHO_VIEW_HALF_HEIGHT;
+      orthoCamera.bottom = -ORTHO_VIEW_HALF_HEIGHT;
+      orthoCamera.updateProjectionMatrix();
     };
     window.addEventListener("resize", onResize);
 
@@ -889,5 +1028,39 @@ export default function FreeThrowSim({
     }
   }, [markers]);
 
-  return <div ref={mountRef} className="w-full h-full" />;
+  // Redraw the heat map texture whenever the sweep result, opacity, or layer
+  // selection changes. Building the pixel buffer is pure math (heatmapPixels.ts);
+  // this effect just copies it into the DataTexture already sitting in the scene.
+  useEffect(() => {
+    const st = stateRef.current;
+    if (!st.heatmapMesh || !st.heatmapMaterial || !st.heatmapTexture || !st.heatmapPixelData) return;
+    if (!heatmap) {
+      st.heatmapMesh.visible = false;
+      return;
+    }
+    const pixels = computeHeatmapPixels(heatmap.grid, { layer: heatmap.layer });
+    st.heatmapPixelData.set(pixels);
+    st.heatmapTexture.needsUpdate = true;
+    st.heatmapMaterial.uniforms.opacity.value = heatmap.opacity;
+    st.heatmapMesh.visible = true;
+  }, [heatmap]);
+
+  return (
+    <div className="relative w-full h-full">
+      <div ref={mountRef} className="w-full h-full" />
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="absolute top-3 right-3 bg-card/90"
+        onClick={() => {
+          const next = cameraMode === "perspective" ? "orthographic" : "perspective";
+          setCameraMode(next);
+          stateRef.current.cameraMode = next;
+        }}
+      >
+        {cameraMode === "perspective" ? "Top-down view" : "Perspective view"}
+      </Button>
+    </div>
+  );
 }
