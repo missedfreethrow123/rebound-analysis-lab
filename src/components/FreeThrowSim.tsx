@@ -93,6 +93,25 @@ const BACKBOARD_Y = RIM_Y + M(BACKBOARD_Y_ABOVE_RIM_M); // center (bottom edge s
 
 const BALL_R = M(BALL_RADIUS_M); // size 6-ish
 
+// Render-only: where the *decorative* near-baseline court markings (the
+// baseline itself, the key's baseline edge, the sidelines' baseline end, the
+// restricted-area's side lines, and the 3PT arc's baseline anchors) are drawn.
+// At the rulebook-accurate BASELINE_Z, the backboard/rim — correctly placed
+// relative to the physics baseline — still read as floating a long way past
+// a big stretch of bare floor beyond the key, because none of that floor is
+// covered by any court marking. None of these meshes are ever touched by
+// simulate()/collisions/the sweep grid (they're pure paint), so pulling them
+// in toward the hoop is free: it doesn't move the rim, backboard, ball, or
+// heat map at all, so nothing needs to "line up" with a shift — everything
+// that already lined up with the true rim still does, untouched.
+const VISUAL_BASELINE_Z = BACKBOARD_Z + 0.6;
+
+// The key's paint color: normal saturated blue for ordinary play, muted to a
+// neutral tone while the heat map is showing (see the [heatmap] effect) so its
+// solid rectangle doesn't read as heat map "background" behind sparse data.
+const KEY_COLOR_NORMAL = 0x0088ff;
+const KEY_COLOR_MUTED = 0x2a2f36;
+
 // Heat map plane footprint — matches src/physics/sweepGrid.ts's grid exactly
 // (same cell size and axis convention), so a texture built from a SweepGrid
 // lines up with the court underneath it with no separate offset to get wrong.
@@ -106,8 +125,14 @@ const HEATMAP_Y = 0.003;
 
 // Exactly two fixed camera angles, hard-switched (no in-between motion): the default
 // behind-the-shooter view, and an overhead "hoop cam" used while the shot is in flight.
-const CAM_ORIGINAL_POS = new THREE.Vector3(0, 3.0, FT_LINE_Z - 5.0);
-const CAM_ORIGINAL_TARGET = new THREE.Vector3(0, 2.6, 0);
+// Pulled back further and narrower FOV than the original close/wide setup: the
+// old 80fov, close-in framing exaggerated perspective distortion, making the
+// backboard/rim (already correctly positioned inside the baseline) read as
+// disconnected/"floating" above the key, and compressing the visible half-court
+// into a stubby-looking box. Render-only — doesn't touch physics/constants.
+const CAM_ORIGINAL_FOV = 50;
+const CAM_ORIGINAL_POS = new THREE.Vector3(0, 7.5, FT_LINE_Z - 6.5);
+const CAM_ORIGINAL_TARGET = new THREE.Vector3(0, 1.2, 2.0);
 const CAM_HOOP_POS = new THREE.Vector3(0, RIM_Y + 3.2, RIM_Z - 1.0);
 const CAM_HOOP_TARGET = new THREE.Vector3(0, RIM_Y - 1.5, RIM_Z + 1.5);
 
@@ -206,6 +231,7 @@ export default function FreeThrowSim({
     canShoot: boolean;
     heatmapMesh?: THREE.Mesh;
     heatmapMaterial?: THREE.ShaderMaterial;
+    keyMaterial?: THREE.MeshStandardMaterial;
     heatmapTexture?: THREE.DataTexture;
     heatmapPixelData?: Uint8Array;
   }>({
@@ -230,7 +256,7 @@ export default function FreeThrowSim({
     scene.fog = new THREE.Fog(0x05060a, 22, 55);
 
     // Symmetrical low-angle over-the-shoulder camera behind the FT line arc
-    const camera = new THREE.PerspectiveCamera(80, width / height, 0.1, 200);
+    const camera = new THREE.PerspectiveCamera(CAM_ORIGINAL_FOV, width / height, 0.1, 200);
     camera.position.copy(CAM_ORIGINAL_POS);
     camera.lookAt(CAM_ORIGINAL_TARGET);
 
@@ -328,7 +354,12 @@ export default function FreeThrowSim({
     floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
     floorTex.repeat.set(8, 8);
     floorTex.colorSpace = THREE.SRGBColorSpace;
-    const floorGeo = new THREE.PlaneGeometry(40, 40);
+    // Large enough that its own edge always falls past the fog's far distance
+    // (55, set above) from any camera angle in this scene, so the floor fades
+    // smoothly into the fog/background like a real gym floor extending past
+    // the sightline — instead of the previous 40x40 plane's edge sometimes
+    // being visible as an abrupt "the world just stops here" cutoff.
+    const floorGeo = new THREE.PlaneGeometry(220, 220);
     const floorMat = new THREE.MeshStandardMaterial({
       map: floorTex,
       color: 0xd4a359,
@@ -341,13 +372,16 @@ export default function FreeThrowSim({
     scene.add(floor);
 
     // Paint — free-throw lane ("the key"): rectangular, no trapezoid taper,
-    // LANE_WIDTH wide x LANE_LENGTH long, centered on the basket's x=0 axis,
-    // running from the baseline to the free-throw line.
-    const keyGeo = new THREE.PlaneGeometry(LANE_WIDTH, LANE_LENGTH);
-    const keyMat = new THREE.MeshStandardMaterial({ color: 0x0088ff, roughness: 0.5, metalness: 0.1 });
+    // LANE_WIDTH wide, centered on the basket's x=0 axis, running from the
+    // free-throw line to VISUAL_BASELINE_Z (not the true LANE_LENGTH/BASELINE_Z
+    // — see that constant's comment: pulling the paint's baseline edge in
+    // toward the hoop is what actually closes the "floating gap" visually).
+    const VISUAL_LANE_LENGTH = VISUAL_BASELINE_Z - FT_LINE_Z;
+    const keyGeo = new THREE.PlaneGeometry(LANE_WIDTH, VISUAL_LANE_LENGTH);
+    const keyMat = new THREE.MeshStandardMaterial({ color: KEY_COLOR_NORMAL, roughness: 0.5, metalness: 0.1 });
     const key = new THREE.Mesh(keyGeo, keyMat);
     key.rotation.x = -Math.PI / 2;
-    key.position.set(0, 0.002, (BASELINE_Z + FT_LINE_Z) / 2);
+    key.position.set(0, 0.002, (VISUAL_BASELINE_Z + FT_LINE_Z) / 2);
     key.receiveShadow = true;
     scene.add(key);
 
@@ -445,19 +479,20 @@ export default function FreeThrowSim({
       return group;
     };
 
-    // Baseline: full COURT_WIDTH, at the near edge of the half-court
+    // Baseline: drawn at VISUAL_BASELINE_Z, not the true BASELINE_Z — see that
+    // constant's comment. Full COURT_WIDTH, at the near edge of the half-court.
     scene.add(paintLine([
-      new THREE.Vector3(-SIDELINE_X, 0, BASELINE_Z),
-      new THREE.Vector3(SIDELINE_X, 0, BASELINE_Z),
+      new THREE.Vector3(-SIDELINE_X, 0, VISUAL_BASELINE_Z),
+      new THREE.Vector3(SIDELINE_X, 0, VISUAL_BASELINE_Z),
     ], 0.08));
 
-    // Sidelines: run the HALF_COURT_LENGTH from the baseline to the half-court line
+    // Sidelines: run from the (visual) baseline to the half-court line
     scene.add(paintLine([
-      new THREE.Vector3(-SIDELINE_X, 0, BASELINE_Z),
+      new THREE.Vector3(-SIDELINE_X, 0, VISUAL_BASELINE_Z),
       new THREE.Vector3(-SIDELINE_X, 0, HALF_COURT_Z),
     ], 0.08));
     scene.add(paintLine([
-      new THREE.Vector3(SIDELINE_X, 0, BASELINE_Z),
+      new THREE.Vector3(SIDELINE_X, 0, VISUAL_BASELINE_Z),
       new THREE.Vector3(SIDELINE_X, 0, HALF_COURT_Z),
     ], 0.08));
 
@@ -484,11 +519,11 @@ export default function FreeThrowSim({
       scene.add(paintLine([p1, p2], 0.06));
     }
 
-    // Key/lane rectangle border, baseline to free-throw line
+    // Key/lane rectangle border, free-throw line to the (visual) baseline
     scene.add(paintLine([
       new THREE.Vector3(-LANE_HALF_WIDTH, 0, FT_LINE_Z),
-      new THREE.Vector3(-LANE_HALF_WIDTH, 0, BASELINE_Z),
-      new THREE.Vector3(LANE_HALF_WIDTH, 0, BASELINE_Z),
+      new THREE.Vector3(-LANE_HALF_WIDTH, 0, VISUAL_BASELINE_Z),
+      new THREE.Vector3(LANE_HALF_WIDTH, 0, VISUAL_BASELINE_Z),
       new THREE.Vector3(LANE_HALF_WIDTH, 0, FT_LINE_Z),
     ], 0.06));
 
@@ -512,12 +547,12 @@ export default function FreeThrowSim({
       raPts.push(new THREE.Vector3(Math.cos(a) * RESTRICTED_AREA_R, 0, -Math.sin(a) * RESTRICTED_AREA_R));
     }
     scene.add(paintLine(raPts, 0.05));
-    // short connectors from the restricted-area arc's open ends to the baseline
+    // short connectors from the restricted-area arc's open ends to the (visual) baseline
     scene.add(paintLine([
-      new THREE.Vector3(-RESTRICTED_AREA_R, 0, 0), new THREE.Vector3(-RESTRICTED_AREA_R, 0, BASELINE_Z),
+      new THREE.Vector3(-RESTRICTED_AREA_R, 0, 0), new THREE.Vector3(-RESTRICTED_AREA_R, 0, VISUAL_BASELINE_Z),
     ], 0.05));
     scene.add(paintLine([
-      new THREE.Vector3(RESTRICTED_AREA_R, 0, 0), new THREE.Vector3(RESTRICTED_AREA_R, 0, BASELINE_Z),
+      new THREE.Vector3(RESTRICTED_AREA_R, 0, 0), new THREE.Vector3(RESTRICTED_AREA_R, 0, VISUAL_BASELINE_Z),
     ], 0.05));
 
     // Three-point line: constant-radius arc (THREE_PT_R) centered on the rim, all the
@@ -529,10 +564,10 @@ export default function FreeThrowSim({
     const threePtArcStartAngle = Math.acos(THREE_PT_CORNER_X / THREE_PT_R);
     const threePtArcEndZ = -THREE_PT_R * Math.sin(threePtArcStartAngle);
     scene.add(paintLine([
-      new THREE.Vector3(-THREE_PT_CORNER_X, 0, BASELINE_Z), new THREE.Vector3(-THREE_PT_CORNER_X, 0, threePtArcEndZ),
+      new THREE.Vector3(-THREE_PT_CORNER_X, 0, VISUAL_BASELINE_Z), new THREE.Vector3(-THREE_PT_CORNER_X, 0, threePtArcEndZ),
     ], 0.07));
     scene.add(paintLine([
-      new THREE.Vector3(THREE_PT_CORNER_X, 0, BASELINE_Z), new THREE.Vector3(THREE_PT_CORNER_X, 0, threePtArcEndZ),
+      new THREE.Vector3(THREE_PT_CORNER_X, 0, VISUAL_BASELINE_Z), new THREE.Vector3(THREE_PT_CORNER_X, 0, threePtArcEndZ),
     ], 0.07));
     const threePtArcPts: THREE.Vector3[] = [];
     for (let a = threePtArcStartAngle; a <= Math.PI - threePtArcStartAngle; a += Math.PI / 96) {
@@ -679,13 +714,17 @@ export default function FreeThrowSim({
     scene.add(hoopGroup);
 
     // Support: yellow-green cylindrical arm & neck, navy/blue tapered padded base.
-    // The base + ballast must sit entirely behind the baseline (outside the play
-    // area) — only the arm, backboard, and rim are allowed to cross into the court.
-    const SUPPORT_ARM_Z = BACKBOARD_Z + 0.85;
-    const SUPPORT_NECK_Z = BACKBOARD_Z + 1.7;
-    const SUPPORT_BASE_Z = BACKBOARD_Z + 2.0; // near face at BASELINE_Z + 0.1, clear of the baseline
+    // The base + ballast must sit entirely behind VISUAL_BASELINE_Z (outside the
+    // play area) — only the arm, backboard, and rim are allowed to cross into the
+    // court. Positioned off VISUAL_BASELINE_Z (not BACKBOARD_Z + a fixed offset)
+    // so the support keeps a small, deliberate clearance behind the pulled-in
+    // baseline instead of suddenly reading as floating far beyond it again.
+    const SUPPORT_NECK_Z = VISUAL_BASELINE_Z + 0.5;
+    const SUPPORT_ARM_LENGTH = SUPPORT_NECK_Z - BACKBOARD_Z;
+    const SUPPORT_ARM_Z = BACKBOARD_Z + SUPPORT_ARM_LENGTH / 2;
+    const SUPPORT_BASE_Z = VISUAL_BASELINE_Z + 1.1; // near face ~0.4m clear of the visual baseline
     const yellowMat = new THREE.MeshStandardMaterial({ color: 0xa8cc2e, roughness: 0.45, metalness: 0.35 });
-    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.7, 20), yellowMat);
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, SUPPORT_ARM_LENGTH, 20), yellowMat);
     arm.rotation.x = Math.PI / 2;
     arm.position.set(0, BACKBOARD_Y, SUPPORT_ARM_Z);
     scene.add(arm);
@@ -847,6 +886,7 @@ export default function FreeThrowSim({
     stateRef.current.trajLine = trajLine;
     stateRef.current.heatmapMesh = heatmapMesh;
     stateRef.current.heatmapMaterial = heatmapMaterial;
+    stateRef.current.keyMaterial = keyMat;
     stateRef.current.heatmapTexture = heatmapTexture;
     stateRef.current.heatmapPixelData = heatmapPixelData;
 
@@ -1036,6 +1076,7 @@ export default function FreeThrowSim({
     if (!st.heatmapMesh || !st.heatmapMaterial || !st.heatmapTexture || !st.heatmapPixelData) return;
     if (!heatmap) {
       st.heatmapMesh.visible = false;
+      st.keyMaterial?.color.setHex(KEY_COLOR_NORMAL);
       return;
     }
     const pixels = computeHeatmapPixels(heatmap.grid, { layer: heatmap.layer });
@@ -1043,6 +1084,12 @@ export default function FreeThrowSim({
     st.heatmapTexture.needsUpdate = true;
     st.heatmapMaterial.uniforms.opacity.value = heatmap.opacity;
     st.heatmapMesh.visible = true;
+    // The key's own paint is a solid, saturated blue that — sitting right where
+    // most rebounds land — reads as a hard rectangular "background" competing
+    // with the heat map's warm colours over empty cells. Mute it to a neutral
+    // tone while the heat map is showing so only real density stands out; this
+    // recolours existing paint, it doesn't touch the heat map's own transparency.
+    st.keyMaterial?.color.setHex(KEY_COLOR_MUTED);
   }, [heatmap]);
 
   return (

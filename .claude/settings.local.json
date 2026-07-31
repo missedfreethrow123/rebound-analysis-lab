@@ -30,7 +30,11 @@
       "Bash(node test9.js)",
       "Bash(node test10.js)",
       "Bash(node test11.js)",
-      "Bash(node test12.js)"
+      "Bash(node test12.js)",
+      "Bash(echo \"=== routeTree.gen.ts full content ===\" *)",
+      "Read(//dev/**)",
+      "Bash(git status *)",
+      "Bash(node inspect_current.mjs)"
     ]
   }
 }
