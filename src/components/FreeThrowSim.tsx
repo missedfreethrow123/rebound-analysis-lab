@@ -20,7 +20,7 @@ import {
 import { GRID_NX, GRID_NY, GRID_CELL_SIZE_M, type SweepGrid } from "@/physics/sweepGrid";
 import { computeHeatmapPixels, type HeatmapLayer } from "@/rendering/heatmapPixels";
 
-type Marker = { x: number; z: number };
+type Marker = { x: number; z: number; made: boolean };
 type Stats = {
   landingX: number;
   landingZ: number;
@@ -122,6 +122,16 @@ const HEATMAP_CENTER_Z = BASELINE_Z - HEATMAP_DEPTH / 2;
 // over the court surface/paint, but the white lines still render crisply on
 // top of it, per HEATMAP_SPEC.md's "underneath the court lines... not on top."
 const HEATMAP_Y = 0.003;
+// The sweep grid itself never records a sample beyond the true BASELINE_Z
+// (worldToCell rejects it), so no rebound data exists past the real end line.
+// But the heat map PLANE's own geometry still spans all the way to that true
+// baseline, which — now that the *visual* court/support pulled in to
+// VISUAL_BASELINE_Z (see that constant) — means the plane itself would poke
+// past the shortened court into the out-of-bounds strip. This is the v (row)
+// fraction, in the plane's own UV space, below which a fragment's world-z
+// would land beyond VISUAL_BASELINE_Z; the heat map shader discards anything
+// under it, so the drawn heat map never extends past the (now shorter) court.
+const HEATMAP_CLIP_MIN_V = Math.max(0, (BASELINE_Z - VISUAL_BASELINE_Z) / HEATMAP_DEPTH);
 
 // Exactly two fixed camera angles, hard-switched (no in-between motion): the default
 // behind-the-shooter view, and an overhead "hoop cam" used while the shot is in flight.
@@ -133,12 +143,44 @@ const HEATMAP_Y = 0.003;
 const CAM_ORIGINAL_FOV = 50;
 const CAM_ORIGINAL_POS = new THREE.Vector3(0, 7.5, FT_LINE_Z - 6.5);
 const CAM_ORIGINAL_TARGET = new THREE.Vector3(0, 1.2, 2.0);
-const CAM_HOOP_POS = new THREE.Vector3(0, RIM_Y + 3.2, RIM_Z - 1.0);
+// The in-flight "hoop cam": the original position/target (restored below,
+// after a since-reverted experiment that repositioned it entirely rather than
+// just zooming it). Zoomed out from that original by pushing the camera back
+// along the exact same sightline to CAM_HOOP_TARGET — same target, same
+// direction/angle, just further away — rather than moving it to a different
+// vantage. Sized (1.9x) so the frame covers roughly baseline-to-farthest-miss:
+// a brute-force sweep over DEFAULT_SWEEP_RANGES found the farthest a shot
+// actually lands (floorPoint) is ~3.8m from the rim (angle 62°, aim -2°, speed
+// 8.6 m/s), well short of a full half-court, so there's no need to zoom out
+// that far. Shares CAM_ORIGINAL_FOV (one THREE.PerspectiveCamera reused for
+// both — see the two-camera-angle note above), so FOV is never touched here
+// either, which would also affect the untouched setup/aiming camera.
 const CAM_HOOP_TARGET = new THREE.Vector3(0, RIM_Y - 1.5, RIM_Z + 1.5);
+const CAM_HOOP_POS_ORIGINAL = new THREE.Vector3(0, RIM_Y + 3.2, RIM_Z - 1.0);
+const CAM_HOOP_ZOOM_OUT = 1.9;
+const CAM_HOOP_POS = CAM_HOOP_TARGET.clone().addScaledVector(
+  CAM_HOOP_POS_ORIGINAL.clone().sub(CAM_HOOP_TARGET),
+  CAM_HOOP_ZOOM_OUT,
+);
 
-// Half the world-Z extent the top-down orthographic camera frames (so ~18m
-// vertically, comfortably covering the 14m heat map grid depth plus margin).
-const ORTHO_VIEW_HALF_HEIGHT = 9;
+// Half the world-Z extent the top-down orthographic camera frames. Widened
+// from 8.3 to 9.5 (~19m total) so the view reads as "half the court, baseline
+// to half-court line" rather than just the area around the rim: that covers
+// HALF_COURT_Z (-12.425) on the far side and the support stanchion's rear
+// edge (~2.775) on the near side with roughly 2.5m of margin on each end, so
+// nothing at either edge gets clipped.
+const ORTHO_VIEW_HALF_HEIGHT = 9.5;
+
+// How far past the half-court line the sideline markings are drawn. The ortho
+// camera's frame (centered at HEATMAP_CENTER_Z, see above) extends roughly
+// 2.5m beyond HALF_COURT_Z on the far side (per the note above), so sidelines
+// that stopped exactly at HALF_COURT_Z left a strip of unmarked floor visible
+// between the court's edge and the actual frame edge — reading as the court
+// abruptly cutting off mid-screen. Extending them past the frame's farthest
+// visible point (with a buffer so they run off-screen, not stop right at it)
+// makes the boundary lines continue naturally to the edge of the view, like a
+// real full court, instead of ending inside it.
+const SIDELINE_FAR_Z = HEATMAP_CENTER_Z - ORTHO_VIEW_HALF_HEIGHT - 3;
 
 // All physics (rim/backboard/floor collision, drag, net resistance) now lives
 // in src/physics/core.ts's simulate() — one function used for both the single
@@ -175,12 +217,17 @@ function previewPoints(result: ShotResult): THREE.Vector3[] {
   return pts;
 }
 
-// Whether the shot's flight ever actually reaches the hoop apparatus (rim or
-// backboard) rather than sailing wide/short — used to gate the Shoot button
-// and color the preview line, matching the old predictTrajectory-based gate's
-// intent without keeping a second, cruder physics pass around just for it.
+// Whether the shot's flight ever actually touches the rim — used to gate the
+// Shoot button and color the preview line. Backboard-only contact (no rim
+// touch) doesn't count: hitting the glass and never reaching the ring isn't
+// "reaching the hoop" for gating purposes, even though core.ts's own outcome
+// classification still calls that case "backboard_miss" rather than
+// "airball". outcome === "made" is checked separately (not just
+// rimContacts > 0) because a clean swish never touches the rim at all —
+// rimContacts stays 0 for it — so relying on rimContacts alone would
+// incorrectly disable Shoot for a shot that's actually going in.
 function reachesHoop(result: ShotResult): boolean {
-  return result.outcome === "made" || result.outcome === "rim_miss" || result.outcome === "backboard_miss";
+  return result.rimContacts > 0 || result.outcome === "made";
 }
 
 export default function FreeThrowSim({
@@ -304,14 +351,9 @@ export default function FreeThrowSim({
       if (sl.castShadow) sl.shadow.mapSize.set(1024, 1024);
       scene.add(sl);
       scene.add(sl.target);
-
-      // Bright fixture
-      const bulb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.18, 12, 8),
-        new THREE.MeshBasicMaterial({ color: 0xffffff }),
-      );
-      bulb.position.set(sx, 13.05, sz);
-      scene.add(bulb);
+      // Deliberately no visible bulb/fixture mesh here — the SpotLight above
+      // still illuminates the court exactly as before, just without a glowing
+      // sphere floating at its position.
     }
 
     // Court key spotlight highlighting hoop
@@ -352,7 +394,12 @@ export default function FreeThrowSim({
     }
     const floorTex = new THREE.CanvasTexture(plankCanvas);
     floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
-    floorTex.repeat.set(8, 8);
+    // Repeat count scales with the floor's own size (220) so each plank tile
+    // stays ~5m, matching the original 40x40 floor's density (40/8). Without
+    // this, enlarging the plane alone stretches each tile to ~27m, and the
+    // grain goes flat/blurry past the court — reading as the floor visually
+    // "running out" even though the geometry itself keeps going.
+    floorTex.repeat.set(44, 44);
     floorTex.colorSpace = THREE.SRGBColorSpace;
     // Large enough that its own edge always falls past the fog's far distance
     // (55, set above) from any camera angle in this scene, so the floor fades
@@ -430,7 +477,7 @@ export default function FreeThrowSim({
     // first and keeps only the hottest core, converging on "nothing visible"
     // as it approaches 0, which reads similarly to fading out in practice.
     const heatmapMaterial = new THREE.ShaderMaterial({
-      uniforms: { map: { value: heatmapTexture }, opacity: { value: 0.7 } },
+      uniforms: { map: { value: heatmapTexture }, opacity: { value: 0.7 }, clipMinV: { value: HEATMAP_CLIP_MIN_V } },
       vertexShader: `
         varying vec2 vUv;
         void main() {
@@ -441,8 +488,13 @@ export default function FreeThrowSim({
       fragmentShader: `
         uniform sampler2D map;
         uniform float opacity;
+        uniform float clipMinV;
         varying vec2 vUv;
         void main() {
+          // v=0 is the baseline row (see the DataTexture's flipY=false note below);
+          // anything under clipMinV falls between the true baseline and the
+          // shorter, pulled-in visual court, so it never gets painted.
+          if (vUv.y < clipMinV) discard;
           vec4 texColor = texture2D(map, vUv);
           float threshold = mix(0.02, 0.95, 1.0 - opacity);
           if (texColor.a < threshold) discard;
@@ -486,14 +538,16 @@ export default function FreeThrowSim({
       new THREE.Vector3(SIDELINE_X, 0, VISUAL_BASELINE_Z),
     ], 0.08));
 
-    // Sidelines: run from the (visual) baseline to the half-court line
+    // Sidelines: run from the (visual) baseline past the half-court line to
+    // SIDELINE_FAR_Z (see that constant) so they continue to the edge of the
+    // top-down view instead of stopping short of it.
     scene.add(paintLine([
       new THREE.Vector3(-SIDELINE_X, 0, VISUAL_BASELINE_Z),
-      new THREE.Vector3(-SIDELINE_X, 0, HALF_COURT_Z),
+      new THREE.Vector3(-SIDELINE_X, 0, SIDELINE_FAR_Z),
     ], 0.08));
     scene.add(paintLine([
       new THREE.Vector3(SIDELINE_X, 0, VISUAL_BASELINE_Z),
-      new THREE.Vector3(SIDELINE_X, 0, HALF_COURT_Z),
+      new THREE.Vector3(SIDELINE_X, 0, SIDELINE_FAR_Z),
     ], 0.08));
 
     // Free-throw line: spans the width of the lane, LANE_LENGTH from the baseline
@@ -579,14 +633,16 @@ export default function FreeThrowSim({
     threePtArcPts[threePtArcPts.length - 1].set(-THREE_PT_CORNER_X, 0, threePtArcEndZ);
     scene.add(paintLine(threePtArcPts, 0.07));
 
-    // Half-court line, and the center circle's near half (the only part visible
-    // on a half-court view), radius CENTER_CIRCLE_R centered exactly on that line
+    // Half-court line, and the full center circle (both halves — the far half
+    // sits past HALF_COURT_Z within the sidelines' SIDELINE_FAR_Z extension, so
+    // it no longer reads as a circle abruptly cut off mid-shape), radius
+    // CENTER_CIRCLE_R centered exactly on that line
     scene.add(paintLine([
       new THREE.Vector3(-SIDELINE_X, 0, HALF_COURT_Z),
       new THREE.Vector3(SIDELINE_X, 0, HALF_COURT_Z),
     ], 0.08));
     const centerCirclePts: THREE.Vector3[] = [];
-    for (let a = 0; a <= Math.PI; a += Math.PI / 48) {
+    for (let a = 0; a <= Math.PI * 2 + 1e-6; a += Math.PI / 48) {
       centerCirclePts.push(new THREE.Vector3(Math.cos(a) * CENTER_CIRCLE_R, 0, HALF_COURT_Z + Math.sin(a) * CENTER_CIRCLE_R));
     }
     scene.add(paintLine(centerCirclePts, 0.07));
@@ -849,34 +905,6 @@ export default function FreeThrowSim({
     };
     (stateRef.current as any).__ledTick = ledTick;
 
-    // Lens flare / sun star sprites near ceiling lights
-    const flareCanvas = document.createElement("canvas");
-    flareCanvas.width = 256; flareCanvas.height = 256;
-    const fctx = flareCanvas.getContext("2d")!;
-    const rg = fctx.createRadialGradient(128, 128, 0, 128, 128, 128);
-    rg.addColorStop(0, "rgba(255,255,255,1)");
-    rg.addColorStop(0.15, "rgba(255,255,240,0.6)");
-    rg.addColorStop(0.4, "rgba(255,220,180,0.15)");
-    rg.addColorStop(1, "rgba(255,255,255,0)");
-    fctx.fillStyle = rg; fctx.fillRect(0, 0, 256, 256);
-    fctx.strokeStyle = "rgba(255,255,255,0.55)";
-    fctx.lineWidth = 2;
-    fctx.beginPath(); fctx.moveTo(0, 128); fctx.lineTo(256, 128); fctx.stroke();
-    fctx.beginPath(); fctx.moveTo(128, 0); fctx.lineTo(128, 256); fctx.stroke();
-    const flareTex = new THREE.CanvasTexture(flareCanvas);
-    const flareMat = new THREE.SpriteMaterial({
-      map: flareTex, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, depthTest: false,
-    });
-    for (let i = 0; i < rigCount; i++) {
-      const t = (i / (rigCount - 1)) * 2 - 1;
-      const sx = t * 8;
-      const sz = -2 + (i % 2 === 0 ? -1.5 : 1.5);
-      const s = new THREE.Sprite(flareMat.clone());
-      s.position.set(sx, 12.6, sz);
-      s.scale.set(3.5, 3.5, 1);
-      scene.add(s);
-    }
-
     stateRef.current.renderer = renderer;
     stateRef.current.scene = scene;
     stateRef.current.camera = camera;
@@ -938,7 +966,7 @@ export default function FreeThrowSim({
         if (!st.landingFired && st.result.floorTime !== null && elapsed >= st.result.floorTime) {
           st.landingFired = true;
           const [fx, fz] = st.result.floorPoint!;
-          onLanding({ x: fx, z: fz });
+          onLanding({ x: fx, z: fz, made: st.result.outcome === "made" });
         }
 
         const finalT = traj[(sampleCount - 1) * 4];
@@ -1060,7 +1088,13 @@ export default function FreeThrowSim({
     }
     const geo = new THREE.CircleGeometry(0.15, 24);
     const mat = new THREE.MeshBasicMaterial({ color: 0xff2233, transparent: true, opacity: 0.85 });
+    // Made shots don't get a landing mark — the red disc means "this is where
+    // the miss came down," which isn't meaningful once the ball's already
+    // gone through the net. markers itself still gets an entry either way
+    // (routes/index.tsx's "Total shots" count is markers.length), only the
+    // disc is skipped here.
     for (const m of markers) {
+      if (m.made) continue;
       const disc = new THREE.Mesh(geo, mat);
       disc.rotation.x = -Math.PI / 2;
       disc.position.set(m.x, 0.005, m.z);

@@ -265,7 +265,13 @@ describe("Phase 2 physics", () => {
     expect(airballResult.rimContacts).toBe(0);
     expect(airballResult.catchPoint).not.toBeNull();
 
-    const backboardOnly: ShotParams = { heightCm: 190, angleDeg: 52, aimDeg: 0, speed: 7.65, spinRps: 2.5 };
+    // speed 7.65 at this angle used to be the "backboard-only miss" fixture
+    // here, but it actually rattles back off the backboard and drops through
+    // the hoop — a made basket, not a miss (see the made-shot detection fix
+    // in core.ts, which used to require rimContacts === 0 to count as made,
+    // silently misclassifying rattle-ins like this one as backboard_miss).
+    // This angle/speed genuinely never goes in, so it's a real backboard-only miss.
+    const backboardOnly: ShotParams = { heightCm: 190, angleDeg: 40, aimDeg: 0, speed: 8.3, spinRps: 2.5 };
     const backboardResult = simulate(backboardOnly, { recordTrajectory: false });
     expect(backboardResult.outcome).toBe("backboard_miss");
     expect(backboardResult.rimContacts).toBe(0);
@@ -273,11 +279,15 @@ describe("Phase 2 physics", () => {
   });
 
   it("a rim or backboard contact re-arms the catch point instead of keeping a pre-bounce guess", () => {
-    // The default slider shot touches the rim multiple times before the
-    // backboard: catchPoint should reflect the descent *after* whichever of
-    // those came last, not an early candidate invalidated by a later bounce.
+    // The default slider shot touches the rim multiple times, then the
+    // backboard, then drops through the hoop — made, not a miss (see the
+    // made-shot detection fix in core.ts: this used to be misclassified as
+    // backboard_miss because "made" required zero prior rim/backboard
+    // contact, even though the ball genuinely goes in after rattling
+    // around). catchPoint should reflect the descent *after* whichever bounce
+    // came last, not an early candidate invalidated by a later one.
     const result = simulate({ heightCm: 190, angleDeg: 52, aimDeg: 0, speed: 7.5, spinRps: 2.5 }, { recordTrajectory: false });
-    expect(result.outcome).toBe("backboard_miss");
+    expect(result.outcome).toBe("made");
     expect(result.rimContacts).toBeGreaterThan(0);
     expect(result.catchPoint).not.toBeNull();
     expect(result.catchTime).not.toBeNull();

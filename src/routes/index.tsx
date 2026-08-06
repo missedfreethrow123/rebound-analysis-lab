@@ -24,7 +24,7 @@ export const Route = createFileRoute("/")({
   component: Index,
 });
 
-type Marker = { x: number; z: number };
+type Marker = { x: number; z: number; made: boolean };
 type Stats = {
   landingX: number; landingZ: number; airTime: number; impactVel: number;
   maxHeight: number; rimContacts: number; backboardHit: boolean;

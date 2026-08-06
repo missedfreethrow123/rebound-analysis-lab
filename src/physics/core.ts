@@ -388,9 +388,15 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
       }
     }
 
-    // Swish detection: a clean, still-uncontested descent through the hoop
-    // opening, before any rim or backboard contact.
-    if (!madeShot && rimContacts === 0 && !backboardHit) {
+    // Made-shot detection: any downward descent through the hoop opening —
+    // a clean, uncontested swish, or the ball rattling off the rim and/or
+    // backboard first and then dropping through. Previously gated on
+    // rimContacts === 0 && !backboardHit (a swish-only check), which meant a
+    // shot that touched the rim before falling in was scored the same as a
+    // miss (rim_miss/backboard_miss below) even though it went in the hoop.
+    // rimContacts/backboardHit stay tracked as metadata regardless (see their
+    // own field comments) — they no longer gate whether this counts as made.
+    if (!madeShot) {
       const dxz = Math.hypot(posX, posZ - RIM_Z_M);
       const crossedRimHeight = prevY >= RIM_HEIGHT_M && posY < RIM_HEIGHT_M;
       if (velY < 0 && dxz < RIM_RADIUS_M - BALL_RADIUS_M && crossedRimHeight) {
