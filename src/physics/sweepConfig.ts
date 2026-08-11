@@ -30,7 +30,7 @@ export const DEFAULT_SWEEP_RANGES: Pick<SweepConfig, "angle" | "aim" | "speed" |
   angle: { min: 35, max: 65, step: 0.5 },
   aim: { min: -12, max: 12, step: 0.5 },
   speed: { min: 5.5, max: 9.0, step: 0.05 },
-  record: "catchPoint",
+  record: "floorPoint",
   excludeMade: true,
 };
 

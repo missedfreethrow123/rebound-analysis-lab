@@ -254,9 +254,10 @@ function HeatmapCaption({ config, stats }: { config: SweepConfig; stats: SweepSt
   return (
     <div className="absolute bottom-3 left-3 right-3 lg:right-auto lg:max-w-md rounded-md border border-border bg-card/90 p-3 text-xs text-muted-foreground space-y-1 pointer-events-none">
       <div>
-        Height {config.heightCm} cm · Backspin {config.spinRps} rev/s · Angle {config.angle.min}–{config.angle.max}°
-        (step {config.angle.step}°) · Aim {config.aim.min}–{config.aim.max}° (step {config.aim.step}°) · Speed{" "}
-        {config.speed.min}–{config.speed.max} m/s (step {config.speed.step} m/s)
+        Shows where the ball first lands on the floor (not catch/chest height). Height {config.heightCm} cm ·
+        Backspin {config.spinRps} rev/s · Angle {config.angle.min}–{config.angle.max}° (step {config.angle.step}°) ·
+        Aim {config.aim.min}–{config.aim.max}° (step {config.aim.step}°) · Speed {config.speed.min}–
+        {config.speed.max} m/s (step {config.speed.step} m/s)
       </div>
       <div>
         {stats ? stats.totalShots.toLocaleString() : "…"} shots swept

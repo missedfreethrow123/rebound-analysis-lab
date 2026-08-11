@@ -71,7 +71,7 @@ describe("sweepConfig", () => {
     const differentHeight = { ...a, heightCm: 200 };
     const differentSpin = { ...a, spinRps: 3 };
     const differentAngle = { ...a, angle: { ...a.angle, step: 1 } };
-    const differentRecord = { ...a, record: "floorPoint" as const };
+    const differentRecord = { ...a, record: "catchPoint" as const };
     const differentExclude = { ...a, excludeMade: false };
     const keys = [a, differentHeight, differentSpin, differentAngle, differentRecord, differentExclude].map(sweepCacheKey);
     expect(new Set(keys).size).toBe(keys.length); // every variant produces a distinct key

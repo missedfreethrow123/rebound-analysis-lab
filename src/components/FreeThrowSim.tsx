@@ -141,8 +141,17 @@ const HEATMAP_CLIP_MIN_V = Math.max(0, (BASELINE_Z - VISUAL_BASELINE_Z) / HEATMA
 // disconnected/"floating" above the key, and compressing the visible half-court
 // into a stubby-looking box. Render-only — doesn't touch physics/constants.
 const CAM_ORIGINAL_FOV = 50;
-const CAM_ORIGINAL_POS = new THREE.Vector3(0, 7.5, FT_LINE_Z - 6.5);
-const CAM_ORIGINAL_TARGET = new THREE.Vector3(0, 1.2, 2.0);
+// Setup camera height, expressed directly relative to rim height (rather
+// than as a drop from the original 7.5m) now that it sits down near the rim
+// itself — a single easy-to-adjust constant to fine-tune in small steps.
+// x/z position is untouched (FT_LINE_Z - 6.5, same as always — same
+// distance, not moved any closer). The look-at point is the rim itself, so
+// the camera genuinely looks toward the hoop from this low vantage — the
+// previous floor-level target point (meant for the original high-up view)
+// no longer makes sense from just above rim height.
+const CAM_ORIGINAL_HEIGHT_ABOVE_RIM_M = 0.3; // meters above rim height
+const CAM_ORIGINAL_POS = new THREE.Vector3(0, RIM_Y + CAM_ORIGINAL_HEIGHT_ABOVE_RIM_M, FT_LINE_Z - 6.5);
+const CAM_ORIGINAL_TARGET = new THREE.Vector3(0, RIM_Y, RIM_Z);
 // The in-flight "hoop cam": the original position/target (restored below,
 // after a since-reverted experiment that repositioned it entirely rather than
 // just zooming it). Zoomed out from that original by pushing the camera back
@@ -181,6 +190,54 @@ const ORTHO_VIEW_HALF_HEIGHT = 9.5;
 // makes the boundary lines continue naturally to the edge of the view, like a
 // real full court, instead of ending inside it.
 const SIDELINE_FAR_Z = HEATMAP_CENTER_Z - ORTHO_VIEW_HALF_HEIGHT - 3;
+
+// Aim preview (picture-in-picture, bottom-right corner): a small, STATIC
+// second camera pointed at the fixed rim/backboard assembly. It never reacts
+// to aim/angle/power/height at all, so the rim and backboard stay fully
+// framed and centered no matter what the sliders are set to — only the aim
+// line and ball marker (drawn elsewhere) move. Tuned for an elevated view
+// tilted down at a modest angle from the FRONT of the backboard — the
+// shooter's side of the rim (negative PREVIEW_CAM_Z_OFFSET_FROM_BACKBOARD
+// puts the camera in front of the backboard's face, toward the shooter,
+// rather than behind it) — so both the rim and the front/playing face of
+// the backboard sit in frame together, rather than looking straight down
+// onto just the rim, or in from behind the glass. Since this is not a
+// near-vertical look, the default camera "up" vector (0,1,0) works fine here
+// (unlike the existing top-down orthoCamera, which — being a genuinely
+// straight-down look — needs a non-default up to avoid a degenerate
+// orientation; see orthoCamera.up.set elsewhere in this file). All three
+// framing numbers are separate, clearly-named constants so they can be
+// retuned without touching the camera math itself.
+// FOV controls zoom at this fixed position: narrowed to crop tightly around
+// the rim/backboard (checked by hand against the backboard's top edge — the
+// tightest point in frame at this angle — which stays inside the frustum
+// with a couple of degrees of margin at this value). Narrow further to zoom
+// in more; if anything starts clipping, this is the first place to widen.
+const PREVIEW_CAM_FOV = 45;
+const PREVIEW_CAM_HEIGHT_ABOVE_RIM = 2; // meters above rim height — higher = steeper (more top-down) angle
+const PREVIEW_CAM_Z_OFFSET_FROM_BACKBOARD = -2.375; // meters from the backboard along its depth axis — negative = in front (shooter's side), positive = behind (far side); smaller magnitude = closer to the rim
+
+// Preview-only objects (this whole feature reuses the existing
+// scene/camera/rim/backboard/ball/aim line — nothing is duplicated) that
+// still need to stay invisible to the main and top-down/orthographic cameras
+// without a second scene: the ball marker, and the preview's own thicker
+// stand-in for the aim line (see previewTrajMesh below — a real 3D tube, not
+// a fatter THREE.Line, since most browsers' WebGL ignore Line.linewidth
+// entirely; the same reason the court's own paintLine() markings are drawn
+// as extruded ribbons instead of thick Lines). Three.js layers do this
+// natively: each object's layer mask is set to ONLY this layer, and only
+// previewCamera enables it — the other cameras default to layer 0 and simply
+// never render it.
+const PREVIEW_ONLY_LAYER = 1;
+// The ORIGINAL thin trajLine, conversely, needs to stay visible in the main
+// and ortho views exactly as before, but NOT show up a second time
+// underneath previewTrajMesh in the preview box. Moving it off the default
+// layer 0 onto this one, then explicitly re-enabling that layer on the main
+// and ortho cameras (see the mount effect below), keeps their view of it
+// byte-for-byte the same while previewCamera — which never enables this
+// layer — simply never renders it.
+const MAIN_VIEW_TRAJ_LAYER = 2;
+const PREVIEW_TRAJ_TUBE_RADIUS_M = 0.012; // preview-only aim line's radius
 
 // All physics (rim/backboard/floor collision, drag, net resistance) now lives
 // in src/physics/core.ts's simulate() — one function used for both the single
@@ -230,6 +287,63 @@ function reachesHoop(result: ShotResult): boolean {
   return result.rimContacts > 0 || result.outcome === "made";
 }
 
+// Where the ball's trajectory descends through rim height — read directly off
+// simulate()'s own trajectory samples (linearly interpolated between the two
+// samples that bracket the crossing, the same technique the animate()
+// playback loop below already uses to place the ball between samples), not a
+// second physics pass or a reimplementation of the arc. Mirrors the exact
+// descending-crossing test core.ts's own made-shot detection uses (y >=
+// RIM_HEIGHT_M then y < RIM_HEIGHT_M while still descending), so this always
+// finds the same crossing that would decide a make. Returns null if the
+// trajectory never comes back down through rim height at all (e.g. a weak
+// lob whose apex is already below it) — the preview marker is just hidden then.
+function rimHeightCrossingPoint(result: ShotResult): { x: number; z: number } | null {
+  const traj = result.trajectory;
+  const sampleCount = traj.length / 4;
+  for (let i = 0; i < sampleCount - 1; i++) {
+    const y0 = traj[i * 4 + 2];
+    const y1 = traj[(i + 1) * 4 + 2];
+    if (y0 >= RIM_HEIGHT_M && y1 < RIM_HEIGHT_M) {
+      const frac = (RIM_HEIGHT_M - y0) / (y1 - y0);
+      const x0 = traj[i * 4 + 1];
+      const x1 = traj[(i + 1) * 4 + 1];
+      const z0 = traj[i * 4 + 3];
+      const z1 = traj[(i + 1) * 4 + 3];
+      return { x: x0 + (x1 - x0) * frac, z: z0 + (z1 - z0) * frac };
+    }
+  }
+  return null;
+}
+
+// Where the preview's line/ball should end: the ball's first actual contact
+// with the rim or backboard, taken as an exact sample from simulate()'s own
+// trajectory — collisions always get one (see core.ts's maybeSample calls in
+// each contact block), so no interpolation is needed for that case. If the
+// shot never touches either — a clean swish, or a total airball that reaches
+// the floor untouched — falls back to the same rim-height crossing above, so
+// the preview still stops near the rim instead of running all the way down
+// to the floor. Built on top of previewPoints() (used unchanged by the main
+// view's trajLine, which this feature must not touch) by trimming it further
+// only in that fallback case, so the two never disagree about where the line
+// already legitimately stops for an actual rim/backboard hit.
+function previewLinePoints(result: ShotResult): THREE.Vector3[] {
+  const base = previewPoints(result);
+  const impactWasFloor =
+    result.firstImpactTime !== null &&
+    result.floorTime !== null &&
+    Math.abs(result.firstImpactTime - result.floorTime) < 1e-9;
+  if (!impactWasFloor) return base; // rim/backboard contact (or no impact recorded at all) — already correctly truncated above
+
+  const crossing = rimHeightCrossingPoint(result);
+  if (!crossing) return base;
+  for (let i = 0; i < base.length - 1; i++) {
+    if (base[i].y >= RIM_HEIGHT_M && base[i + 1].y < RIM_HEIGHT_M) {
+      return [...base.slice(0, i + 1), new THREE.Vector3(crossing.x, RIM_HEIGHT_M, crossing.z)];
+    }
+  }
+  return base;
+}
+
 export default function FreeThrowSim({
   controls,
   shootTrigger,
@@ -251,6 +365,17 @@ export default function FreeThrowSim({
   heatmap?: { grid: SweepGrid; opacity: number; layer: HeatmapLayer } | null;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
+  // The bottom-right aim-preview box: doubles as both the mount point for its
+  // own small canvas and the visibility toggle target (shown while setting up
+  // a shot, hidden the instant Shoot fires — see the animate() loop and the
+  // shootTrigger effect below).
+  const previewMountRef = useRef<HTMLDivElement>(null);
+  // The preview-only marker mesh and thick trajectory tube — both updated by
+  // the controls-change effect below, which lives in a different effect than
+  // the one that creates them, so they need to be refs rather than local
+  // variables.
+  const previewMarkerRef = useRef<THREE.Mesh | null>(null);
+  const previewTrajMeshRef = useRef<THREE.Mesh | null>(null);
   // The scene-init effect below runs once (mount only) and its closures — in
   // particular the post-landing reset setTimeout — would otherwise capture
   // whatever `controls` was at that first render forever. Route reads through
@@ -306,6 +431,10 @@ export default function FreeThrowSim({
     const camera = new THREE.PerspectiveCamera(CAM_ORIGINAL_FOV, width / height, 0.1, 200);
     camera.position.copy(CAM_ORIGINAL_POS);
     camera.lookAt(CAM_ORIGINAL_TARGET);
+    // trajLine lives on MAIN_VIEW_TRAJ_LAYER (not the default layer 0 — see
+    // that constant's comment), so it must be explicitly re-enabled here to
+    // keep this camera's view of it exactly as before.
+    camera.layers.enable(MAIN_VIEW_TRAJ_LAYER);
 
     // Orthographic top-down camera: an optional, user-toggled alternative to
     // the perspective views above, so the heat map can be read square-on —
@@ -323,6 +452,7 @@ export default function FreeThrowSim({
     orthoCamera.up.set(0, 0, 1);
     orthoCamera.position.set(0, 30, HEATMAP_CENTER_Z);
     orthoCamera.lookAt(0, 0, HEATMAP_CENTER_Z);
+    orthoCamera.layers.enable(MAIN_VIEW_TRAJ_LAYER); // see MAIN_VIEW_TRAJ_LAYER's comment above
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -830,6 +960,10 @@ export default function FreeThrowSim({
     const trajMat = new THREE.LineDashedMaterial({ color: 0xff3333, dashSize: 0.15, gapSize: 0.1 });
     const trajGeo = new THREE.BufferGeometry();
     const trajLine = new THREE.Line(trajGeo, trajMat);
+    // See MAIN_VIEW_TRAJ_LAYER's comment above: kept off the preview camera
+    // (which only enables layer 0 + PREVIEW_ONLY_LAYER) so it doesn't draw a
+    // second, thin line underneath the preview's own thicker previewTrajMesh.
+    trajLine.layers.set(MAIN_VIEW_TRAJ_LAYER);
     scene.add(trajLine);
 
     // Stadium — oval crowd tier with sparkles and LED ribbon
@@ -904,6 +1038,78 @@ export default function FreeThrowSim({
       ledTex.offset.x = ledClock.t;
     };
     (stateRef.current as any).__ledTick = ledTick;
+
+    // Aim preview: a small picture-in-picture view rendered from a second,
+    // static camera into its own small canvas — reuses the SAME `scene`
+    // object built above (same rim, backboard, ball, aim line), it is not a
+    // copy. The only new objects added to the scene for this are
+    // previewMarker and previewTrajMesh below; everything else the box shows
+    // already exists.
+    const previewMount = previewMountRef.current;
+    let previewRenderer: THREE.WebGLRenderer | undefined;
+    let previewCamera: THREE.PerspectiveCamera | undefined;
+    if (previewMount) {
+      const pw = previewMount.clientWidth;
+      const ph = previewMount.clientHeight;
+      previewCamera = new THREE.PerspectiveCamera(PREVIEW_CAM_FOV, pw / ph, 0.1, 200);
+      previewCamera.position.set(0, RIM_Y + PREVIEW_CAM_HEIGHT_ABOVE_RIM, BACKBOARD_Z + PREVIEW_CAM_Z_OFFSET_FROM_BACKBOARD);
+      previewCamera.lookAt(0, RIM_Y, RIM_Z);
+      // Sees layer 0 (the default — everything else in the scene, MINUS
+      // trajLine, which lives on MAIN_VIEW_TRAJ_LAYER instead — see that
+      // constant's comment) AND the preview-only layer (the ball marker +
+      // previewTrajMesh below); the main/ortho cameras never enable that
+      // layer, so they never render either of those two.
+      previewCamera.layers.enable(PREVIEW_ONLY_LAYER);
+
+      previewRenderer = new THREE.WebGLRenderer({ antialias: true });
+      previewRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      previewRenderer.setSize(pw, ph);
+      previewRenderer.shadowMap.enabled = true;
+      previewRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+      previewRenderer.toneMappingExposure = 1.2;
+      previewRenderer.outputColorSpace = THREE.SRGBColorSpace;
+      previewMount.appendChild(previewRenderer.domElement);
+    }
+
+    // Aim marker: a small basketball — same size/material/seam construction
+    // as the real ball above (BALL_R, seamMat, seamPts1), just placed at
+    // rimHeightCrossingPoint(result) each time controls change (see the
+    // [controls] effect below) instead of following the flight — where the
+    // ball's *already-computed* trajectory passes through rim height.
+    // Slightly emissive so it stays clearly visible even where scene
+    // lighting is dim (e.g. a wide miss, far from the rim's own point light).
+    const previewMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(BALL_R, 24, 18),
+      new THREE.MeshStandardMaterial({ color: 0xd35400, roughness: 0.8, emissive: 0xd35400, emissiveIntensity: 0.3 }),
+    );
+    previewMarker.visible = false;
+    previewMarker.layers.set(PREVIEW_ONLY_LAYER);
+    const previewSeam1 = new THREE.Line(new THREE.BufferGeometry().setFromPoints(seamPts1), seamMat);
+    previewSeam1.layers.set(PREVIEW_ONLY_LAYER);
+    previewMarker.add(previewSeam1);
+    const previewSeam2 = new THREE.Line(new THREE.BufferGeometry().setFromPoints(seamPts1), seamMat);
+    previewSeam2.rotation.x = Math.PI / 2;
+    previewSeam2.layers.set(PREVIEW_ONLY_LAYER);
+    previewMarker.add(previewSeam2);
+    scene.add(previewMarker);
+    previewMarkerRef.current = previewMarker;
+
+    // Preview's own thicker stand-in for the aim line: a real 3D tube (see
+    // PREVIEW_TRAJ_TUBE_RADIUS_M's comment above for why not just a fatter
+    // Line), rebuilt each time controls change from the SAME points already
+    // computed for trajLine — not a second trajectory. The placeholder curve
+    // here is just to give TubeGeometry something valid to build until the
+    // very first [controls] effect run (on initial mount) replaces it.
+    const previewTrajMat = new THREE.MeshBasicMaterial({ color: 0x1e90ff });
+    const previewTrajPlaceholderCurve = new THREE.LineCurve3(new THREE.Vector3(0, RIM_Y, RIM_Z), new THREE.Vector3(0, RIM_Y + 0.01, RIM_Z));
+    const previewTrajMesh = new THREE.Mesh(
+      new THREE.TubeGeometry(previewTrajPlaceholderCurve, 1, PREVIEW_TRAJ_TUBE_RADIUS_M, 8, false),
+      previewTrajMat,
+    );
+    previewTrajMesh.layers.set(PREVIEW_ONLY_LAYER);
+    scene.add(previewTrajMesh);
+    previewTrajMeshRef.current = previewTrajMesh;
 
     stateRef.current.renderer = renderer;
     stateRef.current.scene = scene;
@@ -1015,6 +1221,15 @@ export default function FreeThrowSim({
       const tick = (stateRef.current as any).__ledTick;
       if (tick) tick();
       renderer.render(scene, activeCamera);
+      // Aim preview: visible only while setting up a shot, hidden the instant
+      // Shoot fires (st.flying) and back the moment it lands. Skipping the
+      // render call while hidden (not just hiding it with CSS) avoids paying
+      // for a second render pass during the part of the loop where it isn't
+      // shown anyway.
+      if (previewMount && previewRenderer && previewCamera) {
+        previewMount.style.display = st.flying ? "none" : "block";
+        if (!st.flying) previewRenderer.render(scene, previewCamera);
+      }
       raf = requestAnimationFrame(animate);
     };
     animate();
@@ -1030,6 +1245,13 @@ export default function FreeThrowSim({
       orthoCamera.top = ORTHO_VIEW_HALF_HEIGHT;
       orthoCamera.bottom = -ORTHO_VIEW_HALF_HEIGHT;
       orthoCamera.updateProjectionMatrix();
+      if (previewMount && previewRenderer && previewCamera) {
+        const pw = previewMount.clientWidth;
+        const ph = previewMount.clientHeight;
+        previewRenderer.setSize(pw, ph);
+        previewCamera.aspect = pw / ph;
+        previewCamera.updateProjectionMatrix();
+      }
     };
     window.addEventListener("resize", onResize);
 
@@ -1038,6 +1260,10 @@ export default function FreeThrowSim({
       window.removeEventListener("resize", onResize);
       renderer.dispose();
       mount.removeChild(renderer.domElement);
+      if (previewRenderer) {
+        previewRenderer.dispose();
+        if (previewMount) previewMount.removeChild(previewRenderer.domElement);
+      }
     };
   }, []);
 
@@ -1061,6 +1287,39 @@ export default function FreeThrowSim({
       st.canShoot = canReach;
       onCanShootChange?.(canReach);
     }
+    // Preview's own line + ball marker: previewLinePoints(result) truncates
+    // at the ball's first actual contact with the rim or backboard (falling
+    // back to the rim-height crossing if it never touches either — see that
+    // function's comment) — a SEPARATE, shorter cutoff than `points` above,
+    // which is what trajLine (main view) keeps using untouched. Both the
+    // preview's thick tube and its ball marker are built from this exact
+    // same array, so the ball always sits precisely at the line's endpoint
+    // by construction — they can't disagree about where that is.
+    const previewPts = previewLinePoints(result);
+    const previewEnd = previewPts[previewPts.length - 1];
+    if (previewMarkerRef.current) {
+      if (previewEnd) {
+        previewMarkerRef.current.position.copy(previewEnd);
+        previewMarkerRef.current.visible = true;
+      } else {
+        previewMarkerRef.current.visible = false;
+      }
+    }
+    // Needs at least 2 points for a curve — always true in practice
+    // (simulate() always samples release + more), guarded here only so a
+    // pathological empty trajectory can't throw.
+    if (previewTrajMeshRef.current && previewPts.length >= 2) {
+      const oldGeo = previewTrajMeshRef.current.geometry;
+      previewTrajMeshRef.current.geometry = new THREE.TubeGeometry(
+        new THREE.CatmullRomCurve3(previewPts),
+        Math.max(previewPts.length * 2, 8),
+        PREVIEW_TRAJ_TUBE_RADIUS_M,
+        8,
+        false,
+      );
+      oldGeo.dispose();
+      (previewTrajMeshRef.current.material as THREE.MeshBasicMaterial).color.set(canReach ? 0x1e90ff : 0xff3333);
+    }
   }, [controls, onCanShootChange]);
 
   // Shoot trigger
@@ -1075,6 +1334,10 @@ export default function FreeThrowSim({
     st.landingFired = false;
     st.playStartTime = performance.now();
     st.trajCursor = 0;
+    // Hide the aim preview box immediately (the animate() loop also enforces
+    // this every frame off st.flying, but setting it here too means it
+    // disappears on this exact click rather than waiting up to one frame).
+    if (previewMountRef.current) previewMountRef.current.style.display = "none";
   }, [shootTrigger]);
 
   // Sync markers
@@ -1142,6 +1405,13 @@ export default function FreeThrowSim({
       >
         {cameraMode === "perspective" ? "Top-down view" : "Perspective view"}
       </Button>
+      {/* Aim preview: rim-from-above box, visible only while setting up a
+          shot (hidden/shown imperatively — see the animate() loop and the
+          shootTrigger effect above, keyed off st.flying). */}
+      <div
+        ref={previewMountRef}
+        className="absolute bottom-3 right-3 w-64 h-64 rounded-lg border border-white/25 shadow-lg overflow-hidden pointer-events-none bg-black/40"
+      />
     </div>
   );
 }
