@@ -1447,13 +1447,13 @@ export default function FreeThrowSim({
           Placement below lg (phones/small tablets) must never cover the hoop
           or get hidden behind the mobile controls sheet (routes/index.tsx):
           portrait rides above the sheet (offset driven by the CSS var, set
-          from the controlsOpen prop); landscape sits top-right instead,
-          clear of the sheet entirely, offset down past the top-down-view
-          toggle button (top-3, h-11) so the two never overlap. Desktop
-          (lg:) keeps the original fixed bottom-right placement/size. */}
+          from the controlsOpen prop); landscape sits top-LEFT instead — the
+          hoop is top-center and the top-down-view toggle button is top-right
+          (top-3, h-11), so top-left clears both without needing any offset.
+          Desktop (lg:) keeps the original fixed bottom-right placement/size. */}
       <div
         ref={previewMountRef}
-        className="absolute right-3 w-[clamp(5.5rem,30vw,10rem)] h-[clamp(5.5rem,30vw,10rem)] rounded-lg border border-white/25 shadow-lg overflow-hidden pointer-events-none bg-black/40 max-lg:portrait:bottom-[var(--aim-box-panel-offset)] max-lg:landscape:top-16 md:w-64 md:h-64 lg:bottom-3 lg:top-auto lg:w-64 lg:h-64"
+        className="absolute right-3 w-[clamp(5.5rem,30vw,10rem)] h-[clamp(5.5rem,30vw,10rem)] rounded-lg border border-white/25 shadow-lg overflow-hidden pointer-events-none bg-black/40 max-lg:portrait:bottom-[var(--aim-box-panel-offset)] max-lg:landscape:top-3 max-lg:landscape:left-3 max-lg:landscape:right-auto md:w-64 md:h-64 lg:bottom-3 lg:top-auto lg:w-64 lg:h-64"
         style={{ ["--aim-box-panel-offset" as string]: controlsOpen ? "calc(35dvh + 0.75rem)" : "calc(2.75rem + 0.75rem)" }}
       />
     </div>

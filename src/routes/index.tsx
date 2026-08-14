@@ -176,21 +176,21 @@ function Index() {
           <p className="text-sm text-muted-foreground mt-1 max-lg:landscape:hidden">Physics rebound analyzer</p>
         </div>
 
-        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
+        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-60 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
           <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Player height: {playerHeightCm} cm</Label>
-          <Slider min={140} max={230} step={1} value={[playerHeightCm]} onValueChange={(v) => setPlayerHeightCm(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-0" />
+          <Slider min={140} max={230} step={1} value={[playerHeightCm]} onValueChange={(v) => setPlayerHeightCm(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-24" />
         </div>
-        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
+        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-60 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
           <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Release angle: {angleDeg}°</Label>
-          <Slider min={20} max={80} step={1} value={[angleDeg]} onValueChange={(v) => setAngleDeg(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-0" />
+          <Slider min={20} max={80} step={1} value={[angleDeg]} onValueChange={(v) => setAngleDeg(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-24" />
         </div>
-        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
+        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-60 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
           <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Horizontal aim: {aimDeg}°</Label>
-          <Slider min={-30} max={30} step={1} value={[aimDeg]} onValueChange={(v) => setAimDeg(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-0" />
+          <Slider min={-30} max={30} step={1} value={[aimDeg]} onValueChange={(v) => setAimDeg(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-24" />
         </div>
-        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
+        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-60 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
           <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Power: {power.toFixed(1)} m/s</Label>
-          <Slider min={4} max={12} step={0.1} value={[power]} onValueChange={(v) => setPower(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-0" />
+          <Slider min={4} max={12} step={0.1} value={[power]} onValueChange={(v) => setPower(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-24" />
         </div>
 
         <div className="flex flex-col gap-2 lg:flex-row max-lg:landscape:w-auto max-lg:landscape:shrink-0 max-lg:landscape:flex-row max-lg:landscape:snap-start">
@@ -237,7 +237,7 @@ function Index() {
         )}
 
         {sweepGrid && (
-          <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
+          <div className="space-y-1 md:space-y-2 max-lg:landscape:w-60 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
             <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Heat map opacity: {Math.round(heatmapOpacity * 100)}%</Label>
             <Slider
               min={0}
@@ -245,7 +245,7 @@ function Index() {
               step={1}
               value={[Math.round(heatmapOpacity * 100)]}
               onValueChange={(v) => setHeatmapOpacity(v[0] / 100)}
-              className="max-lg:landscape:flex-1 max-lg:landscape:min-w-0"
+              className="max-lg:landscape:flex-1 max-lg:landscape:min-w-24"
             />
           </div>
         )}
