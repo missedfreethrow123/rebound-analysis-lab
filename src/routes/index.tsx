@@ -138,9 +138,9 @@ function Index() {
           // Capped well short of the hoop, which sits top-center of the
           // court view — the panel must never grow tall enough to cover it.
           // Content scrolls inside instead (overflow-y-auto below).
-          // height (not just max-height) so the strip fills its ~1/5-screen
-          // slot even when scrolled content is shorter than that.
-          "max-h-[20dvh] h-[20dvh] portrait:max-h-[20dvh] portrait:h-[20dvh] landscape:max-h-[55dvh]",
+          // height (not just max-height) so the strip fills its ~1/3-screen
+          // slot in both orientations even when content is shorter than that.
+          "max-h-[35dvh] h-[35dvh] portrait:max-h-[35dvh] portrait:h-[35dvh] landscape:max-h-[35dvh] landscape:h-[35dvh]",
           sheetOpen ? "translate-y-0" : "translate-y-[calc(100%-2.75rem)]",
           "lg:static lg:z-auto lg:w-80 lg:h-full lg:max-h-none lg:translate-y-0 lg:rounded-none lg:border-t-0 lg:border-r lg:shadow-none lg:transition-none",
         )}

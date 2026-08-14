@@ -1454,7 +1454,7 @@ export default function FreeThrowSim({
       <div
         ref={previewMountRef}
         className="absolute right-3 w-[clamp(5.5rem,30vw,10rem)] h-[clamp(5.5rem,30vw,10rem)] rounded-lg border border-white/25 shadow-lg overflow-hidden pointer-events-none bg-black/40 max-lg:portrait:bottom-[var(--aim-box-panel-offset)] max-lg:landscape:top-16 md:w-64 md:h-64 lg:bottom-3 lg:top-auto lg:w-64 lg:h-64"
-        style={{ ["--aim-box-panel-offset" as string]: controlsOpen ? "calc(20dvh + 0.75rem)" : "calc(2.75rem + 0.75rem)" }}
+        style={{ ["--aim-box-panel-offset" as string]: controlsOpen ? "calc(35dvh + 0.75rem)" : "calc(2.75rem + 0.75rem)" }}
       />
     </div>
   );
