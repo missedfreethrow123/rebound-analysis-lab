@@ -9,7 +9,13 @@ const Slider = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <SliderPrimitive.Root
     ref={ref}
-    className={cn("relative flex w-full touch-none select-none items-center", className)}
+    className={cn(
+      // min-h-11 (44px) gives the whole track a thumb-sized tap strip on
+      // phones without changing the visual track/thumb size; lg: reverts to
+      // the original compact desktop height.
+      "relative flex min-h-11 w-full touch-none select-none items-center lg:min-h-0",
+      className,
+    )}
     {...props}
   >
     <SliderPrimitive.Track className="relative h-1.5 w-full grow overflow-hidden rounded-full bg-primary/20">

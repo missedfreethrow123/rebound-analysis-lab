@@ -352,6 +352,7 @@ export default function FreeThrowSim({
   markers,
   onCanShootChange,
   heatmap,
+  controlsOpen = true,
 }: {
   controls: SimControls;
   shootTrigger: number;
@@ -363,6 +364,11 @@ export default function FreeThrowSim({
   // Phase 5 owns actually running a sweep and passing its grid in here — this
   // component only knows how to draw whatever grid it's given.
   heatmap?: { grid: SweepGrid; opacity: number; layer: HeatmapLayer } | null;
+  // Whether the mobile bottom sheet (the controls panel — see routes/index.tsx)
+  // is currently open. Only used in portrait, on phones, to keep the aim box
+  // riding just above the sheet instead of getting covered by it — see the
+  // preview mount's className/style below.
+  controlsOpen?: boolean;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   // The bottom-right aim-preview box: doubles as both the mount point for its
@@ -456,12 +462,19 @@ export default function FreeThrowSim({
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(width, height);
+    // updateStyle=false: the canvas's display size is driven by CSS
+    // (width/height:100%, set below) rather than inline px from three.js, so
+    // it tracks the mount container's layout size on its own.
+    renderer.setSize(width, height, false);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
+    renderer.domElement.style.display = "block";
+    renderer.domElement.style.touchAction = "none";
     mount.appendChild(renderer.domElement);
 
     // Lights: soft ambient + big hemisphere for arena feel
@@ -1063,12 +1076,15 @@ export default function FreeThrowSim({
 
       previewRenderer = new THREE.WebGLRenderer({ antialias: true });
       previewRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      previewRenderer.setSize(pw, ph);
+      previewRenderer.setSize(pw, ph, false);
       previewRenderer.shadowMap.enabled = true;
       previewRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
       previewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
       previewRenderer.toneMappingExposure = 1.2;
       previewRenderer.outputColorSpace = THREE.SRGBColorSpace;
+      previewRenderer.domElement.style.width = "100%";
+      previewRenderer.domElement.style.height = "100%";
+      previewRenderer.domElement.style.display = "block";
       previewMount.appendChild(previewRenderer.domElement);
     }
 
@@ -1202,6 +1218,10 @@ export default function FreeThrowSim({
         }
       }
       if (st.ball) ballLight.position.set(st.ball.position.x, st.ball.position.y + 0.6, st.ball.position.z);
+      // Trajectory line: visible only while setting up a shot, hidden the
+      // instant Shoot fires (st.flying) and back the moment it lands — same
+      // state, same trigger the aim preview box above already hides/shows on.
+      if (st.trajLine) st.trajLine.visible = !st.flying;
       // Camera: the orthographic top-down toggle overrides the normal
       // shooter/hoop-cam switching entirely while active — it exists
       // specifically to read the heat map square-on, not to also track the
@@ -1237,7 +1257,8 @@ export default function FreeThrowSim({
     const onResize = () => {
       const w = mount.clientWidth;
       const h = mount.clientHeight;
-      renderer.setSize(w, h);
+      if (w === 0 || h === 0) return;
+      renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       orthoCamera.left = (-ORTHO_VIEW_HALF_HEIGHT * w) / h;
@@ -1248,16 +1269,29 @@ export default function FreeThrowSim({
       if (previewMount && previewRenderer && previewCamera) {
         const pw = previewMount.clientWidth;
         const ph = previewMount.clientHeight;
-        previewRenderer.setSize(pw, ph);
-        previewCamera.aspect = pw / ph;
-        previewCamera.updateProjectionMatrix();
+        if (pw > 0 && ph > 0) {
+          previewRenderer.setSize(pw, ph, false);
+          previewCamera.aspect = pw / ph;
+          previewCamera.updateProjectionMatrix();
+        }
       }
     };
-    window.addEventListener("resize", onResize);
+    // ResizeObserver (not just a window "resize" listener) so the canvas
+    // tracks its own container's layout size directly — this is what picks
+    // up the bottom sheet panel opening/closing and other container-driven
+    // size changes that don't necessarily fire a window resize event.
+    // orientationchange is kept alongside it as a belt-and-suspenders nudge
+    // for mobile browsers where the container size can settle a frame after
+    // the event (dynamic toolbar show/hide).
+    const resizeObserver = new ResizeObserver(onResize);
+    resizeObserver.observe(mount);
+    if (previewMount) resizeObserver.observe(previewMount);
+    window.addEventListener("orientationchange", onResize);
 
     return () => {
       cancelAnimationFrame(raf);
-      window.removeEventListener("resize", onResize);
+      resizeObserver.disconnect();
+      window.removeEventListener("orientationchange", onResize);
       renderer.dispose();
       mount.removeChild(renderer.domElement);
       if (previewRenderer) {
@@ -1334,10 +1368,12 @@ export default function FreeThrowSim({
     st.landingFired = false;
     st.playStartTime = performance.now();
     st.trajCursor = 0;
-    // Hide the aim preview box immediately (the animate() loop also enforces
-    // this every frame off st.flying, but setting it here too means it
-    // disappears on this exact click rather than waiting up to one frame).
+    // Hide the aim preview box and trajectory line immediately (the
+    // animate() loop also enforces both every frame off st.flying, but
+    // setting them here too means they disappear on this exact click rather
+    // than waiting up to one frame).
     if (previewMountRef.current) previewMountRef.current.style.display = "none";
+    if (st.trajLine) st.trajLine.visible = false;
   }, [shootTrigger]);
 
   // Sync markers
@@ -1390,13 +1426,13 @@ export default function FreeThrowSim({
   }, [heatmap]);
 
   return (
-    <div className="relative w-full h-full">
+    <div className="relative w-full h-full overscroll-none">
       <div ref={mountRef} className="w-full h-full" />
       <Button
         type="button"
         variant="outline"
         size="sm"
-        className="absolute top-3 right-3 bg-card/90"
+        className="absolute top-3 right-3 h-11 bg-card/90 lg:h-8"
         onClick={() => {
           const next = cameraMode === "perspective" ? "orthographic" : "perspective";
           setCameraMode(next);
@@ -1407,10 +1443,18 @@ export default function FreeThrowSim({
       </Button>
       {/* Aim preview: rim-from-above box, visible only while setting up a
           shot (hidden/shown imperatively — see the animate() loop and the
-          shootTrigger effect above, keyed off st.flying). */}
+          shootTrigger effect above, keyed off st.flying).
+          Placement below lg (phones/small tablets) must never cover the hoop
+          or get hidden behind the mobile controls sheet (routes/index.tsx):
+          portrait rides above the sheet (offset driven by the CSS var, set
+          from the controlsOpen prop); landscape sits top-right instead,
+          clear of the sheet entirely, offset down past the top-down-view
+          toggle button (top-3, h-11) so the two never overlap. Desktop
+          (lg:) keeps the original fixed bottom-right placement/size. */}
       <div
         ref={previewMountRef}
-        className="absolute bottom-3 right-3 w-64 h-64 rounded-lg border border-white/25 shadow-lg overflow-hidden pointer-events-none bg-black/40"
+        className="absolute right-3 w-[clamp(5.5rem,30vw,10rem)] h-[clamp(5.5rem,30vw,10rem)] rounded-lg border border-white/25 shadow-lg overflow-hidden pointer-events-none bg-black/40 max-lg:portrait:bottom-[var(--aim-box-panel-offset)] max-lg:landscape:top-16 md:w-64 md:h-64 lg:bottom-3 lg:top-auto lg:w-64 lg:h-64"
+        style={{ ["--aim-box-panel-offset" as string]: controlsOpen ? "calc(20dvh + 0.75rem)" : "calc(2.75rem + 0.75rem)" }}
       />
     </div>
   );

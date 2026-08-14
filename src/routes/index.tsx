@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { lazy, Suspense, useMemo, useRef, useState } from "react";
 import { useHydrated } from "@/lib/useHydrated";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { cn } from "@/lib/utils";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -37,6 +39,10 @@ type CachedSweep = { grid: SweepGrid; stats: SweepStats; config: SweepConfig };
 
 function Index() {
   const hydrated = useHydrated();
+  const isMobile = useIsMobile();
+  // Mobile-only bottom sheet open/closed state (desktop sidebar ignores this
+  // — it's always shown, side-by-side, via lg: classes below).
+  const [sheetOpen, setSheetOpen] = useState(true);
   const [playerHeightCm, setPlayerHeightCm] = useState(190);
   const [angleDeg, setAngleDeg] = useState(52);
   const [aimDeg, setAimDeg] = useState(0);
@@ -67,7 +73,7 @@ function Index() {
   );
 
   const startHeatMap = () => {
-    const config = defaultSweepConfig(playerHeightCm);
+    const config = defaultSweepConfig(playerHeightCm, isMobile);
     const key = sweepCacheKey(config);
     const cached = sweepCacheRef.current.get(key);
     if (cached) {
@@ -104,82 +110,147 @@ function Index() {
     setSweepProgress(null);
   };
 
+  const handleShoot = () => {
+    if (!canShoot) return;
+    setShootTrigger((n) => n + 1);
+    // Mobile only: get the panel out of the way so the shot is unobstructed.
+    if (isMobile) setSheetOpen(false);
+  };
+
+  // FreeThrowSim calls onStats exactly once per shot, at the same instant it
+  // flips its internal st.flying to false and the aim box reappears (see the
+  // animate() loop in FreeThrowSim.tsx) — the real "back in setup" signal, not
+  // a guessed timer. Reopen the panel there so it's back for the next shot.
+  const handleStats = (s: Stats) => {
+    setStats(s);
+    if (isMobile) setSheetOpen(true);
+  };
+
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col lg:flex-row">
-      <aside className="lg:w-80 w-full p-6 border-r border-border space-y-6 bg-card">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Free Throw miss</h1>
-          <p className="text-sm text-muted-foreground mt-1">Physics rebound analyzer</p>
+    <div className="h-dvh w-full overflow-hidden bg-background text-foreground flex flex-col lg:flex-row">
+      {/* Controls: side-by-side sidebar on desktop (lg:static, always open);
+          a collapsible bottom sheet on phones — `fixed` takes it out of flow
+          there, so <main> below (the only remaining flex item) fills the
+          whole screen and the court reads as full-bleed. */}
+      <aside
+        className={cn(
+          "fixed inset-x-0 bottom-0 z-40 flex flex-col overflow-hidden rounded-t-2xl border-t border-border bg-card shadow-2xl transition-transform duration-300 ease-out",
+          // Capped well short of the hoop, which sits top-center of the
+          // court view — the panel must never grow tall enough to cover it.
+          // Content scrolls inside instead (overflow-y-auto below).
+          // height (not just max-height) so the strip fills its ~1/5-screen
+          // slot even when scrolled content is shorter than that.
+          "max-h-[20dvh] h-[20dvh] portrait:max-h-[20dvh] portrait:h-[20dvh] landscape:max-h-[55dvh]",
+          sheetOpen ? "translate-y-0" : "translate-y-[calc(100%-2.75rem)]",
+          "lg:static lg:z-auto lg:w-80 lg:h-full lg:max-h-none lg:translate-y-0 lg:rounded-none lg:border-t-0 lg:border-r lg:shadow-none lg:transition-none",
+        )}
+      >
+        {/* Drag handle: tap to open/close. Desktop never shows it — the
+            sidebar there is always expanded, same as before this change. */}
+        <button
+          type="button"
+          className="flex min-h-11 w-full shrink-0 flex-col items-center justify-center gap-1.5 lg:hidden"
+          onClick={() => setSheetOpen((open) => !open)}
+          aria-expanded={sheetOpen}
+          aria-label={sheetOpen ? "Collapse controls panel" : "Expand controls panel"}
+        >
+          <span className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
+        </button>
+
+        <div
+          className={cn(
+            "w-full flex-1 flex flex-col gap-3 overflow-y-auto px-3 pb-3 pt-0 md:gap-6 md:px-6 md:pb-6 lg:pt-6",
+            // Landscape phones only: the panel is a short strip, so lay every
+            // control out as a horizontal, individually-snapping scroll row
+            // instead of a vertical stack. Mutually exclusive with lg: (by
+            // width) and with the (unprefixed) portrait/desktop column
+            // layout above (by orientation), so neither can leak in.
+            // items-center (not stretch): each item now sizes to its own
+            // compact content and centers within the strip's height, so a
+            // 44px slider is never stretched/clipped against a short row.
+            "max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:overflow-x-auto max-lg:landscape:overflow-y-hidden max-lg:landscape:snap-x max-lg:landscape:snap-mandatory",
+          )}
+        >
+        <div className="max-lg:landscape:w-28 max-lg:landscape:shrink-0 max-lg:landscape:snap-start">
+          <h1 className="text-2xl font-bold tracking-tight max-lg:landscape:text-sm">Free Throw miss</h1>
+          <p className="text-sm text-muted-foreground mt-1 max-lg:landscape:hidden">Physics rebound analyzer</p>
         </div>
 
-        <div className="space-y-2">
-          <Label>Player height: {playerHeightCm} cm</Label>
-          <Slider min={140} max={230} step={1} value={[playerHeightCm]} onValueChange={(v) => setPlayerHeightCm(v[0])} />
+        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
+          <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Player height: {playerHeightCm} cm</Label>
+          <Slider min={140} max={230} step={1} value={[playerHeightCm]} onValueChange={(v) => setPlayerHeightCm(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-0" />
         </div>
-        <div className="space-y-2">
-          <Label>Release angle: {angleDeg}°</Label>
-          <Slider min={20} max={80} step={1} value={[angleDeg]} onValueChange={(v) => setAngleDeg(v[0])} />
+        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
+          <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Release angle: {angleDeg}°</Label>
+          <Slider min={20} max={80} step={1} value={[angleDeg]} onValueChange={(v) => setAngleDeg(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-0" />
         </div>
-        <div className="space-y-2">
-          <Label>Horizontal aim: {aimDeg}°</Label>
-          <Slider min={-30} max={30} step={1} value={[aimDeg]} onValueChange={(v) => setAimDeg(v[0])} />
+        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
+          <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Horizontal aim: {aimDeg}°</Label>
+          <Slider min={-30} max={30} step={1} value={[aimDeg]} onValueChange={(v) => setAimDeg(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-0" />
         </div>
-        <div className="space-y-2">
-          <Label>Power: {power.toFixed(1)} m/s</Label>
-          <Slider min={4} max={12} step={0.1} value={[power]} onValueChange={(v) => setPower(v[0])} />
+        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
+          <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Power: {power.toFixed(1)} m/s</Label>
+          <Slider min={4} max={12} step={0.1} value={[power]} onValueChange={(v) => setPower(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-0" />
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 lg:flex-row max-lg:landscape:w-auto max-lg:landscape:shrink-0 max-lg:landscape:flex-row max-lg:landscape:snap-start">
           <Button
-            className="flex-1"
+            className="h-11 w-full lg:h-9 lg:w-auto lg:flex-1 max-lg:landscape:w-28"
             disabled={!canShoot}
-            onClick={() => canShoot && setShootTrigger((n) => n + 1)}
+            onClick={handleShoot}
           >
             Shoot
           </Button>
           <Button
             variant="secondary"
-            className="flex-1"
+            className="h-11 w-full lg:h-9 lg:w-auto lg:flex-1 max-lg:landscape:w-28"
             disabled={sweepPhase === "running"}
             onClick={startHeatMap}
           >
-            Heat map
+            {sweepPhase === "running" ? "Computing…" : "Heat map"}
           </Button>
-          <Button variant="outline" onClick={() => { setMarkers([]); setStats(null); }}>Clear</Button>
+          <Button
+            variant="outline"
+            className="h-11 w-full lg:h-9 lg:w-auto max-lg:landscape:w-20"
+            onClick={() => { setMarkers([]); setStats(null); }}
+          >
+            Clear
+          </Button>
         </div>
         {!canShoot && (
-          <p className="text-xs text-destructive -mt-4">
+          <p className="text-xs text-destructive -mt-1 md:-mt-4 max-lg:landscape:mt-0 max-lg:landscape:w-40 max-lg:landscape:shrink-0 max-lg:landscape:flex max-lg:landscape:items-center max-lg:landscape:snap-start">
             Trajectory misses the rim entirely — adjust your aim before shooting.
           </p>
         )}
 
         {sweepPhase === "running" && sweepProgress && (
-          <div className="space-y-2">
+          <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start">
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>Sweeping… {sweepProgress.shotsCompleted.toLocaleString()} / {sweepProgress.totalShotsPlanned.toLocaleString()}</span>
               <span>{Math.round((sweepProgress.shotsCompleted / Math.max(1, sweepProgress.totalShotsPlanned)) * 100)}%</span>
             </div>
             <Progress value={(sweepProgress.shotsCompleted / Math.max(1, sweepProgress.totalShotsPlanned)) * 100} />
-            <Button variant="outline" size="sm" className="w-full" onClick={cancelHeatMap}>
+            <Button variant="outline" size="sm" className="h-11 w-full lg:h-8" onClick={cancelHeatMap}>
               Cancel
             </Button>
           </div>
         )}
 
         {sweepGrid && (
-          <div className="space-y-2">
-            <Label>Heat map opacity: {Math.round(heatmapOpacity * 100)}%</Label>
+          <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
+            <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Heat map opacity: {Math.round(heatmapOpacity * 100)}%</Label>
             <Slider
               min={0}
               max={100}
               step={1}
               value={[Math.round(heatmapOpacity * 100)]}
               onValueChange={(v) => setHeatmapOpacity(v[0] / 100)}
+              className="max-lg:landscape:flex-1 max-lg:landscape:min-w-0"
             />
           </div>
         )}
 
-        <div className="rounded-md border border-border p-3 text-xs space-y-1 bg-muted/30">
+        <div className="rounded-md border border-border p-3 text-xs space-y-1 bg-muted/30 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:overflow-y-auto">
           <div className="font-semibold text-sm mb-2">Last shot</div>
           {stats ? (
             <>
@@ -203,7 +274,7 @@ function Index() {
         </div>
 
         {sweepStats && (
-          <div className="rounded-md border border-border p-3 text-xs space-y-1 bg-muted/30">
+          <div className="rounded-md border border-border p-3 text-xs space-y-1 bg-muted/30 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:overflow-y-auto">
             <div className="font-semibold text-sm mb-2">Heat map stats</div>
             <Row k="Shots swept" v={sweepStats.totalShots.toLocaleString()} />
             <Row k="Excluded (made)" v={sweepStats.excludedMadeCount.toLocaleString()} />
@@ -221,19 +292,21 @@ function Index() {
             <Row k="Beyond the rim" v={sweepStats.farSideFraction !== null ? (sweepStats.farSideFraction * 100).toFixed(1) + "%" : "—"} />
           </div>
         )}
+        </div>
       </aside>
 
-      <main className="flex-1 relative min-h-[60vh] lg:min-h-screen">
+      <main className="flex-1 relative overflow-hidden overscroll-none">
         {hydrated ? (
           <Suspense fallback={<div className="p-8 text-muted-foreground">Loading scene…</div>}>
             <FreeThrowSim
               controls={controls}
               shootTrigger={shootTrigger}
-              onStats={setStats}
+              onStats={handleStats}
               onLanding={(m) => setMarkers((prev) => [...prev, m])}
               markers={markers}
               onCanShootChange={setCanShoot}
               heatmap={sweepGrid ? { grid: sweepGrid, opacity: heatmapOpacity, layer: "all" } : null}
+              controlsOpen={sheetOpen}
             />
           </Suspense>
         ) : (

@@ -34,8 +34,19 @@ export const DEFAULT_SWEEP_RANGES: Pick<SweepConfig, "angle" | "aim" | "speed" |
   excludeMade: true,
 };
 
-export function defaultSweepConfig(heightCm: number): SweepConfig {
-  return { heightCm, spinRps: DEFAULT_BACKSPIN_RPS, ...DEFAULT_SWEEP_RANGES };
+// coarse: halves the sample density per axis (double each range's step) —
+// used on phones, where the full-resolution sweep is both slower to compute
+// and overkill for the smaller heat map the mobile layout actually renders.
+export function defaultSweepConfig(heightCm: number, coarse = false): SweepConfig {
+  const ranges = coarse
+    ? {
+        ...DEFAULT_SWEEP_RANGES,
+        angle: { ...DEFAULT_SWEEP_RANGES.angle, step: DEFAULT_SWEEP_RANGES.angle.step * 2 },
+        aim: { ...DEFAULT_SWEEP_RANGES.aim, step: DEFAULT_SWEEP_RANGES.aim.step * 2 },
+        speed: { ...DEFAULT_SWEEP_RANGES.speed, step: DEFAULT_SWEEP_RANGES.speed.step * 2 },
+      }
+    : DEFAULT_SWEEP_RANGES;
+  return { heightCm, spinRps: DEFAULT_BACKSPIN_RPS, ...ranges };
 }
 
 // Expands a RangeConfig into concrete values [min, min+step, ..., max]. Index-
