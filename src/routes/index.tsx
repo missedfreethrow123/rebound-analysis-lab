@@ -127,29 +127,39 @@ function Index() {
   };
 
   return (
-    <div className="h-dvh w-full overflow-hidden bg-background text-foreground flex flex-col lg:flex-row">
-      {/* Controls: side-by-side sidebar on desktop (lg:static, always open);
-          a collapsible bottom sheet on phones — `fixed` takes it out of flow
-          there, so <main> below (the only remaining flex item) fills the
-          whole screen and the court reads as full-bleed. */}
+    <div className="h-dvh w-full overflow-hidden bg-background text-foreground flex flex-col max-lg:landscape:flex-row lg:flex-row">
+      {/* Controls: side-by-side sidebar on desktop (lg:static, always open)
+          AND on mobile landscape (max-lg:landscape:static — same arrangement,
+          just still slidable so Shoot can hide it, see the transform below).
+          Portrait phones alone get the collapsible bottom sheet — `fixed`
+          takes it out of flow there, so <main> below (the only remaining
+          flex item in that one case) fills the whole screen full-bleed. */}
       <aside
         className={cn(
-          "fixed inset-x-0 bottom-0 z-40 flex flex-col overflow-hidden rounded-t-2xl border-t border-border bg-card shadow-2xl transition-transform duration-300 ease-out",
-          // Capped well short of the hoop, which sits top-center of the
-          // court view — the panel must never grow tall enough to cover it.
-          // Content scrolls inside instead (overflow-y-auto below).
-          // height (not just max-height) so the strip fills its ~1/3-screen
-          // slot in both orientations even when content is shorter than that.
-          "max-h-[35dvh] h-[35dvh] portrait:max-h-[35dvh] portrait:h-[35dvh] landscape:max-h-[35dvh] landscape:h-[35dvh]",
-          sheetOpen ? "translate-y-0" : "translate-y-[calc(100%-2.75rem)]",
-          "lg:static lg:z-auto lg:w-80 lg:h-full lg:max-h-none lg:translate-y-0 lg:rounded-none lg:border-t-0 lg:border-r lg:shadow-none lg:transition-none",
+          "flex flex-col overflow-hidden bg-card",
+          // Portrait mobile: bottom sheet (handle-based collapsible strip).
+          "max-lg:portrait:fixed max-lg:portrait:inset-x-0 max-lg:portrait:bottom-0 max-lg:portrait:z-40 max-lg:portrait:rounded-t-2xl max-lg:portrait:border-t max-lg:portrait:border-border max-lg:portrait:shadow-2xl max-lg:portrait:transition-transform max-lg:portrait:duration-300 max-lg:portrait:ease-out max-lg:portrait:max-h-[35dvh] max-lg:portrait:h-[35dvh]",
+          // Landscape mobile: the SAME static side-by-side arrangement as
+          // desktop (below), just with transition/transform still live so it
+          // can slide away on Shoot — desktop's version of these is frozen
+          // (lg:transition-none, permanent lg:translate-y-0).
+          "max-lg:landscape:static max-lg:landscape:z-auto max-lg:landscape:w-80 max-lg:landscape:h-full max-lg:landscape:max-h-none max-lg:landscape:border-r max-lg:landscape:border-border max-lg:landscape:transition-transform max-lg:landscape:duration-300 max-lg:landscape:ease-out",
+          // Shared open/closed transform: open is the same "no offset" value
+          // everywhere; closed differs — portrait peeks its handle, landscape
+          // (no handle in this desktop-style arrangement) hides fully.
+          sheetOpen
+            ? "translate-y-0"
+            : "max-lg:portrait:translate-y-[calc(100%-2.75rem)] max-lg:landscape:translate-y-full",
+          "lg:static lg:z-auto lg:w-80 lg:h-full lg:max-h-none lg:translate-y-0 lg:rounded-none lg:border-r lg:border-border lg:shadow-none lg:transition-none",
         )}
       >
-        {/* Drag handle: tap to open/close. Desktop never shows it — the
-            sidebar there is always expanded, same as before this change. */}
+        {/* Drag handle: tap to open/close. Portrait-mobile only — desktop
+            never shows it, and mobile landscape now uses the same always-
+            expanded desktop arrangement (auto hide/show is Shoot-driven, not
+            manual), so it's hidden there too. */}
         <button
           type="button"
-          className="flex min-h-11 w-full shrink-0 flex-col items-center justify-center gap-1.5 lg:hidden"
+          className="flex min-h-11 w-full shrink-0 flex-col items-center justify-center gap-1.5 lg:hidden max-lg:landscape:hidden"
           onClick={() => setSheetOpen((open) => !open)}
           aria-expanded={sheetOpen}
           aria-label={sheetOpen ? "Collapse controls panel" : "Expand controls panel"}
@@ -157,45 +167,35 @@ function Index() {
           <span className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
         </button>
 
-        <div
-          className={cn(
-            "w-full flex-1 flex flex-col gap-3 overflow-y-auto px-3 pb-3 pt-0 md:gap-6 md:px-6 md:pb-6 lg:pt-6",
-            // Landscape phones only: the panel is a short strip, so lay every
-            // control out as a horizontal, individually-snapping scroll row
-            // instead of a vertical stack. Mutually exclusive with lg: (by
-            // width) and with the (unprefixed) portrait/desktop column
-            // layout above (by orientation), so neither can leak in.
-            // items-center (not stretch): each item now sizes to its own
-            // compact content and centers within the strip's height, so a
-            // 44px slider is never stretched/clipped against a short row.
-            "max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:overflow-x-auto max-lg:landscape:overflow-y-hidden max-lg:landscape:snap-x max-lg:landscape:snap-mandatory",
-          )}
-        >
-        <div className="max-lg:landscape:w-28 max-lg:landscape:shrink-0 max-lg:landscape:snap-start">
-          <h1 className="text-2xl font-bold tracking-tight max-lg:landscape:text-sm">Free Throw miss</h1>
-          <p className="text-sm text-muted-foreground mt-1 max-lg:landscape:hidden">Physics rebound analyzer</p>
+        <div className="w-full flex-1 flex flex-col gap-3 overflow-y-auto px-3 pb-3 pt-0 md:gap-6 md:px-6 md:pb-6 max-lg:landscape:pt-6 lg:pt-6">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Free Throw miss</h1>
+          <p className="text-sm text-muted-foreground mt-1">Physics rebound analyzer</p>
         </div>
 
-        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-60 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
-          <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Player height: {playerHeightCm} cm</Label>
-          <Slider min={140} max={230} step={1} value={[playerHeightCm]} onValueChange={(v) => setPlayerHeightCm(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-24" />
+        <div className="space-y-1 md:space-y-2">
+          <Label>Player height: {playerHeightCm} cm</Label>
+          <Slider min={140} max={230} step={1} value={[playerHeightCm]} onValueChange={(v) => setPlayerHeightCm(v[0])} />
         </div>
-        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-60 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
-          <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Release angle: {angleDeg}°</Label>
-          <Slider min={20} max={80} step={1} value={[angleDeg]} onValueChange={(v) => setAngleDeg(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-24" />
+        <div className="space-y-1 md:space-y-2">
+          <Label>Release angle: {angleDeg}°</Label>
+          <Slider min={20} max={80} step={1} value={[angleDeg]} onValueChange={(v) => setAngleDeg(v[0])} />
         </div>
-        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-60 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
-          <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Horizontal aim: {aimDeg}°</Label>
-          <Slider min={-30} max={30} step={1} value={[aimDeg]} onValueChange={(v) => setAimDeg(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-24" />
+        <div className="space-y-1 md:space-y-2">
+          <Label>Horizontal aim: {aimDeg}°</Label>
+          <Slider min={-30} max={30} step={1} value={[aimDeg]} onValueChange={(v) => setAimDeg(v[0])} />
         </div>
-        <div className="space-y-1 md:space-y-2 max-lg:landscape:w-60 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
-          <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Power: {power.toFixed(1)} m/s</Label>
-          <Slider min={4} max={12} step={0.1} value={[power]} onValueChange={(v) => setPower(v[0])} className="max-lg:landscape:flex-1 max-lg:landscape:min-w-24" />
+        <div className="space-y-1 md:space-y-2">
+          <Label>Power: {power.toFixed(1)} m/s</Label>
+          <Slider min={4} max={12} step={0.1} value={[power]} onValueChange={(v) => setPower(v[0])} />
         </div>
 
-        <div className="flex flex-col gap-2 lg:flex-row max-lg:landscape:w-auto max-lg:landscape:shrink-0 max-lg:landscape:flex-row max-lg:landscape:snap-start">
+        <div className="flex flex-col gap-2 max-lg:landscape:flex-row lg:flex-row">
           <Button
-            className="h-11 w-full lg:h-9 lg:w-auto lg:flex-1 max-lg:landscape:w-28"
+            // Landscape mobile borrows desktop's row/flex-1/w-auto arrangement
+            // but keeps h-11 (44px) instead of desktop's h-9 — finger-sized
+            // tap targets take priority over pixel-identical desktop sizing.
+            className="h-11 w-full max-lg:landscape:w-auto max-lg:landscape:flex-1 lg:h-9 lg:w-auto lg:flex-1"
             disabled={!canShoot}
             onClick={handleShoot}
           >
@@ -203,7 +203,7 @@ function Index() {
           </Button>
           <Button
             variant="secondary"
-            className="h-11 w-full lg:h-9 lg:w-auto lg:flex-1 max-lg:landscape:w-28"
+            className="h-11 w-full max-lg:landscape:w-auto max-lg:landscape:flex-1 lg:h-9 lg:w-auto lg:flex-1"
             disabled={sweepPhase === "running"}
             onClick={startHeatMap}
           >
@@ -211,20 +211,20 @@ function Index() {
           </Button>
           <Button
             variant="outline"
-            className="h-11 w-full lg:h-9 lg:w-auto max-lg:landscape:w-20"
+            className="h-11 w-full max-lg:landscape:w-auto lg:h-9 lg:w-auto"
             onClick={() => { setMarkers([]); setStats(null); }}
           >
             Clear
           </Button>
         </div>
         {!canShoot && (
-          <p className="text-xs text-destructive -mt-1 md:-mt-4 max-lg:landscape:mt-0 max-lg:landscape:w-40 max-lg:landscape:shrink-0 max-lg:landscape:flex max-lg:landscape:items-center max-lg:landscape:snap-start">
+          <p className="text-xs text-destructive -mt-1 md:-mt-4">
             Trajectory misses the rim entirely — adjust your aim before shooting.
           </p>
         )}
 
         {sweepPhase === "running" && sweepProgress && (
-          <div className="space-y-1 md:space-y-2 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start">
+          <div className="space-y-1 md:space-y-2">
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>Sweeping… {sweepProgress.shotsCompleted.toLocaleString()} / {sweepProgress.totalShotsPlanned.toLocaleString()}</span>
               <span>{Math.round((sweepProgress.shotsCompleted / Math.max(1, sweepProgress.totalShotsPlanned)) * 100)}%</span>
@@ -237,20 +237,19 @@ function Index() {
         )}
 
         {sweepGrid && (
-          <div className="space-y-1 md:space-y-2 max-lg:landscape:w-60 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:flex max-lg:landscape:flex-row max-lg:landscape:items-center max-lg:landscape:gap-2 max-lg:landscape:[&>*]:mt-0">
-            <Label className="max-lg:landscape:shrink-0 max-lg:landscape:whitespace-nowrap max-lg:landscape:text-xs">Heat map opacity: {Math.round(heatmapOpacity * 100)}%</Label>
+          <div className="space-y-1 md:space-y-2">
+            <Label>Heat map opacity: {Math.round(heatmapOpacity * 100)}%</Label>
             <Slider
               min={0}
               max={100}
               step={1}
               value={[Math.round(heatmapOpacity * 100)]}
               onValueChange={(v) => setHeatmapOpacity(v[0] / 100)}
-              className="max-lg:landscape:flex-1 max-lg:landscape:min-w-24"
             />
           </div>
         )}
 
-        <div className="rounded-md border border-border p-3 text-xs space-y-1 bg-muted/30 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:overflow-y-auto">
+        <div className="rounded-md border border-border p-3 text-xs space-y-1 bg-muted/30">
           <div className="font-semibold text-sm mb-2">Last shot</div>
           {stats ? (
             <>
@@ -274,7 +273,7 @@ function Index() {
         </div>
 
         {sweepStats && (
-          <div className="rounded-md border border-border p-3 text-xs space-y-1 bg-muted/30 max-lg:landscape:w-56 max-lg:landscape:shrink-0 max-lg:landscape:snap-start max-lg:landscape:overflow-y-auto">
+          <div className="rounded-md border border-border p-3 text-xs space-y-1 bg-muted/30">
             <div className="font-semibold text-sm mb-2">Heat map stats</div>
             <Row k="Shots swept" v={sweepStats.totalShots.toLocaleString()} />
             <Row k="Excluded (made)" v={sweepStats.excludedMadeCount.toLocaleString()} />

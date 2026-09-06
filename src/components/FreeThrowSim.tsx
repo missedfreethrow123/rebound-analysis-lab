@@ -171,6 +171,80 @@ const CAM_HOOP_POS = CAM_HOOP_TARGET.clone().addScaledVector(
   CAM_HOOP_POS_ORIGINAL.clone().sub(CAM_HOOP_TARGET),
   CAM_HOOP_ZOOM_OUT,
 );
+// CAM_HOOP_POS above was hand-tuned against DEFAULT_SWEEP_RANGES's farthest
+// landing spot (~3.8m from the rim), not the full slider ranges (angle
+// 20-80°, aim ±30°, speed 4-12 m/s) — a shot dialed outside the sweep-tested
+// range can land farther than that and fly off the edge of the hoop cam.
+// fitCameraToLanding (below) dollies the SAME camera straight back along its
+// existing CAM_HOOP_TARGET sightline — never rotating it — just far enough
+// to keep that shot's actual landing point in frame; ordinary shots land
+// within CAM_HOOP_POS's existing coverage and get clamped right back to it,
+// so today's framing is unchanged for them.
+const HOOP_CENTER = new THREE.Vector3(0, RIM_Y, RIM_Z);
+const CAM_FIT_MARGIN = 0.85; // ~15% border so the landing marker isn't jammed on the frame edge
+const CAM_FIT_MAX_ZOOM_OUT = 4; // never dolly back more than this multiple of CAM_HOOP_POS's own distance
+const INCLUDE_APEX = false; // optional: also keep the trajectory apex in frame
+
+// Points the in-flight hoop cam must keep in frame for a given shot: the rim
+// and (if the shot reaches the floor within the sim) its landing spot. Pure
+// function of the already-computed ShotResult — no physics run here, just
+// reads fields simulate() already produced.
+function hoopCamFitPoints(result: ShotResult | undefined): THREE.Vector3[] {
+  const points = [HOOP_CENTER];
+  if (result?.floorPoint) {
+    points.push(new THREE.Vector3(result.floorPoint[0], 0, result.floorPoint[1]));
+  }
+  if (INCLUDE_APEX && result && result.trajectory.length > 0) {
+    let apexIndex = 0;
+    let apexY = -Infinity;
+    for (let i = 0; i < result.trajectory.length; i += 4) {
+      if (result.trajectory[i + 2] > apexY) {
+        apexY = result.trajectory[i + 2];
+        apexIndex = i;
+      }
+    }
+    points.push(new THREE.Vector3(result.trajectory[apexIndex + 1], result.trajectory[apexIndex + 2], result.trajectory[apexIndex + 3]));
+  }
+  return points;
+}
+
+// Dollies `basePos` straight BACK along its existing look direction toward
+// `target` — never rotating it — just far enough that every point in
+// `points` stays inside the camera's frustum (with `margin` of border room).
+// Moving straight back along the view axis doesn't change a point's
+// perpendicular (right/up) offset from that axis, only its depth — so the
+// minimum distance for each point/axis has a closed form: the vertical or
+// horizontal offset divided by the frustum's half-width at that depth. Never
+// returns a distance shorter than basePos's own (only zooms out, never in),
+// and never more than CAM_FIT_MAX_ZOOM_OUT times as far.
+function fitCameraToLanding(
+  camera: THREE.PerspectiveCamera,
+  target: THREE.Vector3,
+  basePos: THREE.Vector3,
+  points: THREE.Vector3[],
+  margin: number,
+): THREE.Vector3 {
+  const sCurrent = basePos.distanceTo(target);
+  const dir = target.clone().sub(basePos).normalize(); // camera -> target, unchanged
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  const right = new THREE.Vector3().crossVectors(dir, worldUp).normalize();
+  const up = new THREE.Vector3().crossVectors(right, dir);
+
+  const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const tanH = tanV * camera.aspect;
+
+  let s = sCurrent;
+  for (const p of points) {
+    const rel = p.clone().sub(target);
+    const d0 = rel.dot(dir);
+    const sV = Math.abs(rel.dot(up)) / (tanV * margin) - d0;
+    const sH = Math.abs(rel.dot(right)) / (tanH * margin) - d0;
+    s = Math.max(s, sV, sH);
+  }
+  s = Math.min(s, sCurrent * CAM_FIT_MAX_ZOOM_OUT);
+
+  return target.clone().addScaledVector(dir, -s);
+}
 
 // Half the world-Z extent the top-down orthographic camera frames. Widened
 // from 8.3 to 9.5 (~19m total) so the view reads as "half the court, baseline
@@ -401,6 +475,7 @@ export default function FreeThrowSim({
     ball?: THREE.Mesh;
     flying: boolean;
     result?: ShotResult; // precomputed by simulate() when the shot is fired; the rAF loop only ever plays it back
+    hoopCamPos: THREE.Vector3; // in-flight hoop-cam position — CAM_HOOP_TARGET's sightline, dollied back by fitCameraToLanding at shoot time (see the Shoot-trigger effect) to keep the landing spot in frame
     markerGroup?: THREE.Group;
     trajLine?: THREE.Line;
     playStartTime: number; // performance.now() ms when the current flight's playback started
@@ -415,6 +490,7 @@ export default function FreeThrowSim({
   }>({
     flying: false,
     canShoot: true,
+    hoopCamPos: CAM_HOOP_POS.clone(),
     cameraMode: "perspective",
     playStartTime: 0,
     trajCursor: 0,
@@ -1232,7 +1308,11 @@ export default function FreeThrowSim({
       if (st.cameraMode === "orthographic") {
         activeCamera = orthoCamera;
       } else if (st.flying) {
-        camera.position.copy(CAM_HOOP_POS);
+        // st.hoopCamPos: same CAM_HOOP_TARGET sightline/angle as CAM_HOOP_POS,
+        // just dollied back (never rotated) by fitCameraToLanding at shoot
+        // time so this shot's landing spot stays in frame — see the
+        // Shoot-trigger effect below.
+        camera.position.copy(st.hoopCamPos);
         camera.lookAt(CAM_HOOP_TARGET);
       } else {
         camera.position.copy(CAM_ORIGINAL_POS);
@@ -1261,6 +1341,15 @@ export default function FreeThrowSim({
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
+      // The hoop-cam fit depends on camera.aspect (a wider/narrower frustum
+      // needs a different dolly-back distance for the same landing point) —
+      // redo it on any in-flight resize/orientation change, e.g. rotating a
+      // phone mid-shot, using the same shot result already computed at
+      // Shoot time (no new physics run).
+      const st = stateRef.current;
+      if (st.flying) {
+        st.hoopCamPos = fitCameraToLanding(camera, CAM_HOOP_TARGET, CAM_HOOP_POS, hoopCamFitPoints(st.result), CAM_FIT_MARGIN);
+      }
       orthoCamera.left = (-ORTHO_VIEW_HALF_HEIGHT * w) / h;
       orthoCamera.right = (ORTHO_VIEW_HALF_HEIGHT * w) / h;
       orthoCamera.top = ORTHO_VIEW_HALF_HEIGHT;
@@ -1368,6 +1457,11 @@ export default function FreeThrowSim({
     st.landingFired = false;
     st.playStartTime = performance.now();
     st.trajCursor = 0;
+    // Dolly the hoop cam back (same angle/target, only distance) so this
+    // shot's own landing spot stays in frame — see fitCameraToLanding above.
+    if (st.camera) {
+      st.hoopCamPos = fitCameraToLanding(st.camera, CAM_HOOP_TARGET, CAM_HOOP_POS, hoopCamFitPoints(st.result), CAM_FIT_MARGIN);
+    }
     // Hide the aim preview box and trajectory line immediately (the
     // animate() loop also enforces both every frame off st.flying, but
     // setting them here too means they disappear on this exact click rather
@@ -1426,8 +1520,21 @@ export default function FreeThrowSim({
   }, [heatmap]);
 
   return (
-    <div className="relative w-full h-full overscroll-none">
-      <div ref={mountRef} className="w-full h-full" />
+    <div className="relative w-full h-full overscroll-none max-lg:portrait:overflow-hidden">
+      {/* Portrait phones: the fixed vertical FOV, stretched over a much
+          taller-than-wide viewport than this scene was composed for, leaves
+          a large empty band above the scoreboard ring. Camera position/
+          target/FOV are untouched — instead the mount (and therefore the
+          renderer + its aspect ratio, via the existing ResizeObserver below,
+          unmodified) is rendered ~33% taller than its box and shifted up by
+          that same amount, so the dead space scrolls off the top and the
+          extra footage rendered below (previously hidden under the bottom
+          sheet, which overlays main without changing its actual size) fills
+          back in at the bottom — a pure crop/reframe, not a camera move. */}
+      <div
+        ref={mountRef}
+        className="w-full h-full max-lg:portrait:absolute max-lg:portrait:inset-x-0 max-lg:portrait:top-[-45%] max-lg:portrait:h-[150%]"
+      />
       <Button
         type="button"
         variant="outline"
@@ -1444,16 +1551,20 @@ export default function FreeThrowSim({
       {/* Aim preview: rim-from-above box, visible only while setting up a
           shot (hidden/shown imperatively — see the animate() loop and the
           shootTrigger effect above, keyed off st.flying).
-          Placement below lg (phones/small tablets) must never cover the hoop
-          or get hidden behind the mobile controls sheet (routes/index.tsx):
-          portrait rides above the sheet (offset driven by the CSS var, set
-          from the controlsOpen prop); landscape sits top-LEFT instead — the
-          hoop is top-center and the top-down-view toggle button is top-right
-          (top-3, h-11), so top-left clears both without needing any offset.
-          Desktop (lg:) keeps the original fixed bottom-right placement/size. */}
+          Placement: portrait phones ride it above the collapsible bottom
+          sheet (offset driven by the CSS var, set from the controlsOpen
+          prop). Landscape phones use the same side-by-side desktop layout
+          (routes/index.tsx) so it never overlaps the controls, but it still
+          needs its OWN small size here — desktop's fixed 256px box (w-64/
+          h-64) is a small corner accent on a laptop, but it's a huge chunk
+          (~65% of height) of a ~390px-tall phone screen in landscape. Cap it
+          at min(30vw, 150px), same idea as portrait's clamp() below, and
+          keep it top-left (top-down-view toggle button owns top-right, hoop
+          is top-center) so it can't cover the hoop. Desktop (lg:) is
+          untouched — real desktop viewports are tall enough for 256px. */}
       <div
         ref={previewMountRef}
-        className="absolute right-3 w-[clamp(5.5rem,30vw,10rem)] h-[clamp(5.5rem,30vw,10rem)] rounded-lg border border-white/25 shadow-lg overflow-hidden pointer-events-none bg-black/40 max-lg:portrait:bottom-[var(--aim-box-panel-offset)] max-lg:landscape:top-3 max-lg:landscape:left-3 max-lg:landscape:right-auto md:w-64 md:h-64 lg:bottom-3 lg:top-auto lg:w-64 lg:h-64"
+        className="absolute right-3 w-[clamp(5.5rem,30vw,10rem)] h-[clamp(5.5rem,30vw,10rem)] rounded-lg border border-white/25 shadow-lg overflow-hidden pointer-events-none bg-black/40 max-lg:portrait:bottom-[var(--aim-box-panel-offset)] max-lg:landscape:top-3 max-lg:landscape:left-3 max-lg:landscape:right-auto max-lg:landscape:w-[min(30vw,150px)] max-lg:landscape:h-[min(30vw,150px)] max-lg:landscape:aspect-square md:w-64 md:h-64 lg:bottom-3 lg:top-auto lg:w-64 lg:h-64"
         style={{ ["--aim-box-panel-offset" as string]: controlsOpen ? "calc(35dvh + 0.75rem)" : "calc(2.75rem + 0.75rem)" }}
       />
     </div>
