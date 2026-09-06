@@ -24,7 +24,7 @@ export interface SweepConfig {
 
 // Bump whenever core.ts's physics changes — a cached sweep keyed without this
 // would silently show a stale map next to the new single-shot physics.
-export const PHYSICS_VERSION = 2;
+export const PHYSICS_VERSION = 5; // bumped: backspin removed (DEFAULT_BACKSPIN_RPS 2.5 -> 0)
 
 export const DEFAULT_SWEEP_RANGES: Pick<SweepConfig, "angle" | "aim" | "speed" | "record" | "excludeMade"> = {
   angle: { min: 35, max: 65, step: 0.5 },

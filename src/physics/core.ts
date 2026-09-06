@@ -27,7 +27,6 @@ import {
   BALL_MASS_KG,
   BALL_RADIUS_M,
   BALL_INERTIA_KGM2,
-  DRAG_ACCEL_COEFF,
   MAGNUS_ACCEL_COEFF,
   MAGNUS_LIFT_COEFF_MAX,
   MAGNUS_LIFT_COEFF_SLOPE,
@@ -337,16 +336,12 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
     const prevY = posY;
     const prevZ = posZ;
 
-    // Drag and Magnus lift both scale with the ball's current speed, so both
-    // are skipped (a no-op either way) when it's at rest.
+    // Air drag removed entirely (was -DRAG_ACCEL_COEFF*|v|*v) — this sim now
+    // treats flight as drag-free, gravity + Magnus lift only. Magnus lift
+    // still scales with the ball's current speed, so it's skipped (a no-op
+    // either way) when it's at rest.
     const speed = Math.hypot(velX, velY, velZ);
     if (speed > 1e-9) {
-      // Drag: F = -0.5*rho*Cd*A*|v|*v ⇒ a = -DRAG_ACCEL_COEFF*|v|*v.
-      const dragAccel = DRAG_ACCEL_COEFF * speed;
-      velX -= dragAccel * velX * h;
-      velY -= dragAccel * velY * h;
-      velZ -= dragAccel * velZ * h;
-
       // Magnus lift, using the CURRENT spin state — friction from a
       // rim/backboard/floor contact can add spin to a ball launched with
       // spinRps = 0, and that should start producing lift immediately after.

@@ -118,7 +118,7 @@ describe("Phase 2 physics", () => {
   const dropHeightCm = (dropHeightM / 1.25) * 100;
   const straightDrop: ShotParams = { heightCm: dropHeightCm, angleDeg: 90, aimDeg: 0, speed: 0, spinRps: 0 };
 
-  it("a 2.0m drop with zero spin rebounds to ~1.22m (floor restitution 0.78)", () => {
+  it("a 2.0m drop with zero spin rebounds to ~1.32m (floor restitution 0.8, no air drag)", () => {
     // Sanity-check the heightCm -> release-height inverse before relying on it.
     expect(releaseHeightM(dropHeightCm)).toBeCloseTo(dropHeightM, 9);
 
@@ -134,11 +134,12 @@ describe("Phase 2 physics", () => {
       if (t > result.floorTime! && t < result.floorTime! + 1.0 && y > peak) peak = y;
     }
 
-    // e^2 * 2.0 = 0.78^2 * 2.0 = 1.2168m in vacuum; air drag over the fall and
-    // rebound pulls the real figure a little under that (measured ~1.19m), so
-    // this allows a wider band than a pure-vacuum test would.
-    expect(peak).toBeGreaterThan(1.1);
-    expect(peak).toBeLessThan(1.25);
+    // e^2 * 2.0 = 0.8^2 * 2.0 = 1.28m in a true vacuum. Air drag has been
+    // removed entirely, so the simulated figure (measured ~1.3204m) now
+    // tracks that vacuum prediction directly rather than sitting under it —
+    // the small remaining excess is discrete-timestep integration, not drag.
+    expect(peak).toBeGreaterThan(1.25);
+    expect(peak).toBeLessThan(1.4);
   });
 
   it("a straight-down drop bounces straight up with no horizontal drift", () => {
@@ -243,7 +244,7 @@ describe("Phase 2 physics", () => {
   it("simulate(p) called twice returns identical catchPoint values", () => {
     // A dedicated check for the Phase 2 spec's specific wording, on top of
     // the broader determinism test above (which already covers this).
-    const rimMissParams: ShotParams = { heightCm: 190, angleDeg: 50, aimDeg: 0, speed: 6.78, spinRps: 2.5 };
+    const rimMissParams: ShotParams = { heightCm: 190, angleDeg: 50, aimDeg: 0, speed: 6.78, spinRps: 0 };
     const r1 = simulate(rimMissParams);
     const r2 = simulate(rimMissParams);
     expect(r1.catchPoint).toEqual(r2.catchPoint);
@@ -251,15 +252,20 @@ describe("Phase 2 physics", () => {
 
   it("a well-aimed free throw returns outcome: 'made'", () => {
     // Found by sweeping angle/speed at aim=0 under the Phase 2 physics
-    // (drag, Magnus, and rim friction all shift where "made" lands compared
-    // to the pre-Phase-2 model in core.v1.golden.json).
-    const wellAimed: ShotParams = { heightCm: 190, angleDeg: 50, aimDeg: 0, speed: 7.2, spinRps: 2.5 };
+    // (Magnus and rim friction shift where "made" lands compared to the
+    // pre-Phase-2 model in core.v1.golden.json).
+    // Re-picked twice since: once after air drag was removed entirely (the
+    // old 50/7.2 fixture started overshooting with no drag to bleed off
+    // speed), and again after backspin was removed (DEFAULT_BACKSPIN_RPS = 0
+    // — the 46/7.3 fixture stopped swishing without its Magnus lift). This
+    // one is a clean, contact-free make with zero spin.
+    const wellAimed: ShotParams = { heightCm: 190, angleDeg: 45, aimDeg: 0, speed: 7.05, spinRps: 0 };
     const result = simulate(wellAimed);
     expect(result.outcome).toBe("made");
   });
 
   it("catchPoint is defined for every miss, not just rim-touching ones", () => {
-    const airball: ShotParams = { heightCm: 190, angleDeg: 45, aimDeg: 0, speed: 5.5, spinRps: 2.5 };
+    const airball: ShotParams = { heightCm: 190, angleDeg: 45, aimDeg: 0, speed: 5.5, spinRps: 0 };
     const airballResult = simulate(airball, { recordTrajectory: false });
     expect(airballResult.outcome).toBe("airball");
     expect(airballResult.rimContacts).toBe(0);
@@ -271,7 +277,7 @@ describe("Phase 2 physics", () => {
     // in core.ts, which used to require rimContacts === 0 to count as made,
     // silently misclassifying rattle-ins like this one as backboard_miss).
     // This angle/speed genuinely never goes in, so it's a real backboard-only miss.
-    const backboardOnly: ShotParams = { heightCm: 190, angleDeg: 40, aimDeg: 0, speed: 8.3, spinRps: 2.5 };
+    const backboardOnly: ShotParams = { heightCm: 190, angleDeg: 40, aimDeg: 0, speed: 8.3, spinRps: 0 };
     const backboardResult = simulate(backboardOnly, { recordTrajectory: false });
     expect(backboardResult.outcome).toBe("backboard_miss");
     expect(backboardResult.rimContacts).toBe(0);
@@ -279,14 +285,20 @@ describe("Phase 2 physics", () => {
   });
 
   it("a rim or backboard contact re-arms the catch point instead of keeping a pre-bounce guess", () => {
-    // The default slider shot touches the rim multiple times, then the
-    // backboard, then drops through the hoop — made, not a miss (see the
-    // made-shot detection fix in core.ts: this used to be misclassified as
-    // backboard_miss because "made" required zero prior rim/backboard
-    // contact, even though the ball genuinely goes in after rattling
-    // around). catchPoint should reflect the descent *after* whichever bounce
-    // came last, not an early candidate invalidated by a later one.
-    const result = simulate({ heightCm: 190, angleDeg: 52, aimDeg: 0, speed: 7.5, spinRps: 2.5 }, { recordTrajectory: false });
+    // This fixture touches the rim multiple times, then the backboard, then
+    // drops through the hoop — made, not a miss (see the made-shot detection
+    // fix in core.ts: this used to be misclassified as backboard_miss because
+    // "made" required zero prior rim/backboard contact, even though the ball
+    // genuinely goes in after rattling around). catchPoint should reflect the
+    // descent *after* whichever bounce came last, not an early candidate
+    // invalidated by a later one.
+    // Not the default slider shot (angle 52, speed 7.5) — that one stopped
+    // rattling in once RIM_RESTITUTION/BACKBOARD_RESTITUTION were bumped to
+    // 0.8 (livelier bounces send it out instead). Re-picked again after
+    // backspin was removed (the 36/7.8 fixture no longer rattled in without
+    // Magnus lift); this one keeps the same rim-then-backboard-then-made
+    // shape with zero spin.
+    const result = simulate({ heightCm: 190, angleDeg: 36.5, aimDeg: 0, speed: 7.85, spinRps: 0 }, { recordTrajectory: false });
     expect(result.outcome).toBe("made");
     expect(result.rimContacts).toBeGreaterThan(0);
     expect(result.catchPoint).not.toBeNull();

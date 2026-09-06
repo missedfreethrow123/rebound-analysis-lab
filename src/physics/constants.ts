@@ -9,14 +9,16 @@
 //
 // PHASE 2: dynamics constants below (mass, drag, restitution, friction, rim
 // tube) now match the physically-derived values from HEATMAP_SPEC.md, with
-// one deliberate deviation: FLOOR_RESTITUTION is 0.78, not the spec's 0.85 —
+// one deliberate deviation: FLOOR_RESTITUTION is 0.8, not the spec's 0.85 —
 // the spec's 0.85 was derived against a ball-center drop-height convention,
 // but this sim (and the "drop from 2.0m, rebound to ~1.45m" style test) uses
 // the ball's actual bottom-surface contact height, which needs a lower e to
-// reproduce the same real-world rebound fraction. See core.test.ts's drop test
-// for the reasoning: e=0.78 reproduces a ~1.22m rebound from a 2.0m drop
-// (e^2 * 2.0 = 1.2168m), matching real inflated-ball behavior at that
-// measurement convention. Court-geometry constants (BASELINE_TO_RIM_M,
+// reproduce the same real-world rebound fraction. 0.8 is the directly
+// measured value for that convention (a real 2.0m drop test); see
+// core.test.ts's drop test, which checks the sim reproduces it: e=0.8 gives
+// a ~1.28m rebound from a 2.0m drop in vacuum (e^2 * 2.0 = 1.28m), with air
+// drag pulling the simulated figure a little under that. Court-geometry
+// constants (BASELINE_TO_RIM_M,
 // BACKBOARD_FROM_BASELINE_M, LANE_LENGTH_M) are intentionally NOT changed to
 // the spec's alternate figures — they already reproduce the standard ~4.225m
 // free-throw-line-to-rim distance; see the note below FT_LINE_Z_M.
@@ -33,12 +35,11 @@ export const BALL_RADIUS_M = 0.12;
 export const BALL_INERTIA_KGM2 = (2 / 3) * BALL_MASS_KG * BALL_RADIUS_M * BALL_RADIUS_M;
 
 export const AIR_DENSITY_KGM3 = 1.2;
-export const DRAG_COEFF = 0.5;
 export const BALL_AREA_M2 = Math.PI * BALL_RADIUS_M * BALL_RADIUS_M;
-// F_drag = -0.5 * rho * Cd * A * |v| * v ⇒ a_drag = -DRAG_ACCEL_COEFF * |v| * v.
-// At a typical 7.5 m/s release this works out to roughly 13% of the ball's
-// weight, matching the spec's estimate — not optional at these speeds.
-export const DRAG_ACCEL_COEFF = (0.5 * AIR_DENSITY_KGM3 * DRAG_COEFF * BALL_AREA_M2) / BALL_MASS_KG;
+// Air drag (was F_drag = -0.5*rho*Cd*A*|v|*v, ~13% of the ball's weight at a
+// typical 7.5 m/s release) has been removed entirely — flight is now
+// drag-free (gravity + Magnus lift only). AIR_DENSITY_KGM3/BALL_AREA_M2 stay,
+// since Magnus lift below still uses them.
 
 // F_magnus = 0.5 * rho * Cl * A * |v|^2 * (omega_hat x v_hat), lift
 // coefficient Cl = min(0.25, 0.55*S) where S = spin_angular_speed * r / |v|
@@ -75,9 +76,9 @@ export const BACKBOARD_W_M = 1.8;
 export const BACKBOARD_H_M = 1.05;
 export const BACKBOARD_Y_ABOVE_RIM_M = 0.375; // backboard center sits this far above rim height
 
-export const FLOOR_RESTITUTION = 0.78; // see PHASE 2 note above — not the spec's 0.85
-export const RIM_RESTITUTION = 0.55;
-export const BACKBOARD_RESTITUTION = 0.7;
+export const FLOOR_RESTITUTION = 0.8; // measured directly (drop test), not the spec's 0.85 — see PHASE 2 note above
+export const RIM_RESTITUTION = 0.8; // measured directly, same convention as FLOOR_RESTITUTION — was 0.55
+export const BACKBOARD_RESTITUTION = 0.8; // measured directly, same convention as FLOOR_RESTITUTION — was 0.7
 
 export const FRICTION_RIM = 0.4;
 export const FRICTION_BACKBOARD = 0.5;
@@ -89,7 +90,12 @@ export const FRICTION_FLOOR = 0.5;
 export const NET_DROP_M = 0.4; // matches the drawn net cone height below the rim
 export const NET_DRAG_RATE = 40;
 
-export const DEFAULT_BACKSPIN_RPS = 2.5; // used by both single-shot and the sweep until a spin slider exists
+// Backspin removed: every shot (single-shot and the sweep, until a spin
+// slider exists) now releases with zero spin. The ball can still pick up
+// spin later from rim/backboard/floor friction on a contact — that transfer
+// mechanism and the Magnus lift it feeds are untouched, only the shooter's
+// own release spin was taken out.
+export const DEFAULT_BACKSPIN_RPS = 0;
 
 // Height at which a rebounder is considered to "catch" the ball after it comes
 // off the rim — roughly chest/reach height.
