@@ -113,6 +113,20 @@ export function mergeGrid(target: SweepGrid, targetEverSet: Uint8Array, delta: S
   }
 }
 
+// Concatenates a worker's flat [x,z,x,z,...] delta of rebound-scatter points
+// (rim-touching, non-made landing spots — see sweep.worker.ts's recording
+// gate) onto the running total. Separate from the grid/counts above: those
+// stay a density histogram over every recorded miss regardless of rim
+// contact (still what the "Heat map stats" panel reads), while this is the
+// exact-position list the scatter-dot renderer draws from.
+export function mergePoints(target: Float32Array, delta: Float32Array): Float32Array {
+  if (delta.length === 0) return target;
+  const merged = new Float32Array(target.length + delta.length);
+  merged.set(target);
+  merged.set(delta, target.length);
+  return merged;
+}
+
 export interface SweepTotals {
   totalShots: number;
   excludedMadeCount: number;
@@ -120,10 +134,26 @@ export interface SweepTotals {
   recordedCount: number; // shots actually added to the grid (excludes made-when-excluded and null record points)
   nearSideCount: number; // recorded point on the shooter's side of the rim (z < 0)
   farSideCount: number; // recorded point beyond the rim (z >= 0)
+  // Rebound-contest out-of-bounds count (src/rebound/contest.ts): touched
+  // rim but landed outside the court, using the contest's own (looser)
+  // inbounds test — real court bounds only, no backboard/under-hoop
+  // exclusion. The qualifying (inbounds) points themselves, and the
+  // offense/defense split over them, live in sweep.worker.ts's
+  // contestPoints array instead — see its own comment for why that split
+  // isn't tallied here.
+  contestOutOfBounds: number;
 }
 
 export function emptyTotals(): SweepTotals {
-  return { totalShots: 0, excludedMadeCount: 0, rimTouchCount: 0, recordedCount: 0, nearSideCount: 0, farSideCount: 0 };
+  return {
+    totalShots: 0,
+    excludedMadeCount: 0,
+    rimTouchCount: 0,
+    recordedCount: 0,
+    nearSideCount: 0,
+    farSideCount: 0,
+    contestOutOfBounds: 0,
+  };
 }
 
 export function addTotals(a: SweepTotals, b: SweepTotals): SweepTotals {
@@ -134,6 +164,7 @@ export function addTotals(a: SweepTotals, b: SweepTotals): SweepTotals {
     recordedCount: a.recordedCount + b.recordedCount,
     nearSideCount: a.nearSideCount + b.nearSideCount,
     farSideCount: a.farSideCount + b.farSideCount,
+    contestOutOfBounds: a.contestOutOfBounds + b.contestOutOfBounds,
   };
 }
 
@@ -145,6 +176,11 @@ export interface SweepStats {
   radius50PercentM: number | null; // smallest circle centred on the rim containing >=50% of recorded rebounds
   nearSideFraction: number | null; // 0-1, of recordedCount
   farSideFraction: number | null; // 0-1, of recordedCount
+  // Rebound-contest out-of-bounds count — see SweepTotals's field comment.
+  // The offense/defense split itself is NOT computed here — routes/index.tsx
+  // computes it directly from the worker's contestPoints array instead (see
+  // sweep.worker.ts).
+  contestOutOfBounds: number;
 }
 
 export function computeStats(grid: SweepGrid, totals: SweepTotals): SweepStats {
@@ -201,5 +237,6 @@ export function computeStats(grid: SweepGrid, totals: SweepTotals): SweepStats {
     radius50PercentM,
     nearSideFraction: totals.recordedCount > 0 ? totals.nearSideCount / totals.recordedCount : null,
     farSideFraction: totals.recordedCount > 0 ? totals.farSideCount / totals.recordedCount : null,
+    contestOutOfBounds: totals.contestOutOfBounds,
   };
 }

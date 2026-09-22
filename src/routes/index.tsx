@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { lazy, Suspense, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useMemo, useRef, useState, type ReactNode } from "react";
 import { useHydrated } from "@/lib/useHydrated";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,10 @@ import type { SimControls } from "@/components/FreeThrowSim";
 import { startSweep, type SweepHandle } from "@/physics/sweep";
 import { defaultSweepConfig, sweepCacheKey, totalShotCount, type SweepConfig } from "@/physics/sweepConfig";
 import type { SweepGrid, SweepStats } from "@/physics/sweepGrid";
+import { OFFENSE_COLOR, DEFENSE_COLOR } from "@/rebound/players";
+import { contestLanding } from "@/rebound/contest";
+
+const hexColor = (n: number) => `#${n.toString(16).padStart(6, "0")}`;
 
 const FreeThrowSim = lazy(() => import("@/components/FreeThrowSim"));
 
@@ -35,7 +39,7 @@ type Stats = {
 
 type SweepPhase = "idle" | "running" | "done";
 
-type CachedSweep = { grid: SweepGrid; stats: SweepStats; config: SweepConfig };
+type CachedSweep = { grid: SweepGrid; stats: SweepStats; points: Float32Array; contestPoints: Float32Array; config: SweepConfig };
 
 function Index() {
   const hydrated = useHydrated();
@@ -58,10 +62,16 @@ function Index() {
   // receive the same reference on consecutive ticks; that's fine, since
   // setSweepStats/setSweepProgress change on every tick too and force the
   // re-render that picks up the (already-mutated) grid contents.
-  const [heatmapOpacity, setHeatmapOpacity] = useState(0.7);
+  const [heatmapOpacity, setHeatmapOpacity] = useState(0.2);
   const [sweepPhase, setSweepPhase] = useState<SweepPhase>("idle");
   const [sweepGrid, setSweepGrid] = useState<SweepGrid | null>(null);
   const [sweepStats, setSweepStats] = useState<SweepStats | null>(null);
+  const [sweepPoints, setSweepPoints] = useState<Float32Array | null>(null);
+  // Rebound-contest qualifying landing points (touched rim AND landed
+  // inbounds — src/rebound/contest.ts's own inbounds test, not the
+  // scatter-dot heat map's stricter landingValid). Kept separate from
+  // sweepPoints since the two win-eligible populations differ.
+  const [contestPoints, setContestPoints] = useState<Float32Array | null>(null);
   const [sweepConfig, setSweepConfig] = useState<SweepConfig | null>(null);
   const [sweepProgress, setSweepProgress] = useState<{ shotsCompleted: number; totalShotsPlanned: number } | null>(null);
   const sweepHandleRef = useRef<SweepHandle | null>(null);
@@ -72,13 +82,63 @@ function Index() {
     [playerHeightCm, angleDeg, aimDeg, power],
   );
 
+  // Memoized so FreeThrowSim's [heatmap] effect (which now rebuilds a whole
+  // InstancedMesh, not just refills a texture) only re-runs when the point
+  // set or opacity actually changes — not on every unrelated re-render from
+  // an inline object literal getting a fresh identity each time.
+  const heatmap = useMemo(
+    () => (sweepPoints ? { points: sweepPoints, opacity: heatmapOpacity } : null),
+    [sweepPoints, heatmapOpacity],
+  );
+
+  // Rebound-contest split, recomputed from the already-swept qualifying
+  // points via the idealized box-out eligibility rule (src/rebound/contest.ts)
+  // — no slider anymore, so this only needs to change when contestPoints
+  // itself changes (a new sweep, or toggling the heat map off).
+  const contestSplit = useMemo(() => {
+    if (!contestPoints || contestPoints.length === 0) return null;
+    let offenseWins = 0;
+    let defenseWins = 0;
+    const qualifying = contestPoints.length / 2;
+    for (let i = 0; i < qualifying; i++) {
+      const result = contestLanding(contestPoints[i * 2], contestPoints[i * 2 + 1]);
+      if (result.winnerTeam === "offense") offenseWins++;
+      else if (result.winnerTeam === "defense") defenseWins++;
+      else if (result.winnerTeam === "tie") {
+        offenseWins += 0.5;
+        defenseWins += 0.5;
+      }
+      // "out" can't occur here — every point in contestPoints already passed
+      // isInboundsLanding in the worker.
+    }
+    return { qualifying, offensePercent: (offenseWins / qualifying) * 100, defensePercent: (defenseWins / qualifying) * 100 };
+  }, [contestPoints]);
+
   const startHeatMap = () => {
     const config = defaultSweepConfig(playerHeightCm, isMobile);
     const key = sweepCacheKey(config);
+
+    // Clicking again for the SAME config while a result is already showing is
+    // a toggle-off: the sweep itself and its cache (sweepCacheRef) are
+    // untouched, so clicking once more afterwards reloads the same points
+    // instantly rather than recomputing. A height change since the sweep was
+    // shown must NOT toggle off — it must recompute for the new height (the
+    // sweepConfig comparison below is what tells the two cases apart).
+    if (sweepPhase === "done" && sweepPoints && sweepConfig && sweepCacheKey(sweepConfig) === key) {
+      setSweepPoints(null);
+      setContestPoints(null);
+      setSweepGrid(null);
+      setSweepStats(null);
+      setSweepConfig(null);
+      setSweepPhase("idle");
+      return;
+    }
     const cached = sweepCacheRef.current.get(key);
     if (cached) {
       setSweepGrid(cached.grid);
       setSweepStats(cached.stats);
+      setSweepPoints(cached.points);
+      setContestPoints(cached.contestPoints);
       setSweepConfig(cached.config);
       setSweepProgress(null);
       setSweepPhase("done");
@@ -91,9 +151,17 @@ function Index() {
     const handle = startSweep(config, (progress) => {
       setSweepGrid(progress.grid);
       setSweepStats(progress.stats);
+      setSweepPoints(progress.points);
+      setContestPoints(progress.contestPoints);
       setSweepProgress({ shotsCompleted: progress.shotsCompleted, totalShotsPlanned: progress.totalShotsPlanned });
       if (progress.done) {
-        sweepCacheRef.current.set(key, { grid: progress.grid, stats: progress.stats, config });
+        sweepCacheRef.current.set(key, {
+          grid: progress.grid,
+          stats: progress.stats,
+          points: progress.points,
+          contestPoints: progress.contestPoints,
+          config,
+        });
         sweepHandleRef.current = null;
         setSweepPhase("done");
       }
@@ -189,7 +257,6 @@ function Index() {
           <Label>Power: {power.toFixed(1)} m/s</Label>
           <Slider min={4} max={12} step={0.1} value={[power]} onValueChange={(v) => setPower(v[0])} />
         </div>
-
         <div className="flex flex-col gap-2 max-lg:landscape:flex-row lg:flex-row">
           <Button
             // Landscape mobile borrows desktop's row/flex-1/w-auto arrangement
@@ -207,7 +274,7 @@ function Index() {
             disabled={sweepPhase === "running"}
             onClick={startHeatMap}
           >
-            {sweepPhase === "running" ? "Computing…" : "Heat map"}
+            {sweepPhase === "running" ? "Computing…" : sweepPhase === "done" && sweepPoints ? "Hide heat map" : "Heat map"}
           </Button>
           <Button
             variant="outline"
@@ -236,7 +303,7 @@ function Index() {
           </div>
         )}
 
-        {sweepGrid && (
+        {sweepPoints && (
           <div className="space-y-1 md:space-y-2">
             <Label>Heat map opacity: {Math.round(heatmapOpacity * 100)}%</Label>
             <Slider
@@ -291,6 +358,30 @@ function Index() {
             <Row k="Beyond the rim" v={sweepStats.farSideFraction !== null ? (sweepStats.farSideFraction * 100).toFixed(1) + "%" : "—"} />
           </div>
         )}
+
+        {sweepStats && contestSplit && (
+          <div className="rounded-md border border-border p-3 text-xs space-y-1 bg-muted/30">
+            <div className="font-semibold text-sm mb-2">Rebound contest</div>
+            <Row
+              k={<span style={{ color: hexColor(OFFENSE_COLOR) }} className="font-medium">Offense</span>}
+              v={contestSplit.offensePercent.toFixed(1) + "%"}
+            />
+            <Row
+              k={<span style={{ color: hexColor(DEFENSE_COLOR) }} className="font-medium">Defense</span>}
+              v={contestSplit.defensePercent.toFixed(1) + "%"}
+            />
+            <div className="pt-2 border-t border-border mt-2 space-y-1">
+              <Row k="Qualifying shots" v={contestSplit.qualifying.toLocaleString()} />
+              <Row k="Landed out of bounds" v={sweepStats.contestOutOfBounds.toLocaleString()} />
+            </div>
+            <div className="text-muted-foreground pt-1">
+              Qualifying = touched the rim AND landed inbounds. Winner = whoever starts closest to the landing
+              point among ELIGIBLE players — an attacker is boxed out (ineligible) for any landing closer to the
+              rim than they are; defenders are always eligible. The shooter also starts an extra 0.3s later
+              (just released the shot).
+            </div>
+          </div>
+        )}
         </div>
       </aside>
 
@@ -304,8 +395,9 @@ function Index() {
               onLanding={(m) => setMarkers((prev) => [...prev, m])}
               markers={markers}
               onCanShootChange={setCanShoot}
-              heatmap={sweepGrid ? { grid: sweepGrid, opacity: heatmapOpacity, layer: "all" } : null}
+              heatmap={heatmap}
               controlsOpen={sheetOpen}
+              isMobile={isMobile}
             />
           </Suspense>
         ) : (
@@ -326,24 +418,25 @@ function HeatmapCaption({ config, stats }: { config: SweepConfig; stats: SweepSt
   return (
     <div className="absolute bottom-3 left-3 right-3 lg:right-auto lg:max-w-md rounded-md border border-border bg-card/90 p-3 text-xs text-muted-foreground space-y-1 pointer-events-none">
       <div>
-        Shows where the ball first lands on the floor (not catch/chest height). Height {config.heightCm} cm ·
-        Backspin {config.spinRps} rev/s · Angle {config.angle.min}–{config.angle.max}° (step {config.angle.step}°) ·
-        Aim {config.aim.min}–{config.aim.max}° (step {config.aim.step}°) · Speed {config.speed.min}–
-        {config.speed.max} m/s (step {config.speed.step} m/s)
+        Shows where the ball first lands on the floor (not catch/chest height), for shots that touched the rim at
+        least once — clean swishes and airballs are excluded. Height {config.heightCm} cm · Backspin{" "}
+        {config.spinRps} rev/s · Angle {config.angle.min}–{config.angle.max}° (step {config.angle.step}°) · Aim{" "}
+        {config.aim.min}–{config.aim.max}° (step {config.aim.step}°) · Speed {config.speed.min}–{config.speed.max}{" "}
+        m/s (step {config.speed.step} m/s)
       </div>
       <div>
         {stats ? stats.totalShots.toLocaleString() : "…"} shots swept
         {excludedPct !== null ? ` · ${excludedPct}% excluded as made` : ""}
       </div>
       <div>
-        Map is thresholded, not blended: the opacity control hides the faintest, most spread-out cells first as it's
-        lowered — a partially-faded view is not the full rebound spread.
+        Each rim-touching miss is a small translucent dot; density is shown only by dots overlapping, not by colour —
+        the opacity control fades every dot equally.
       </div>
     </div>
   );
 }
 
-function Row({ k, v }: { k: string; v: string }) {
+function Row({ k, v }: { k: ReactNode; v: string }) {
   return (
     <div className="flex justify-between gap-2">
       <span className="text-muted-foreground">{k}</span>

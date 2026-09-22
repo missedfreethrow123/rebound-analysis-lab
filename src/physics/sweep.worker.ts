@@ -20,6 +20,7 @@ declare const self: {
 import { simulate } from "./core";
 import { createEmptyGrid, recordSample, emptyTotals, GRID_NX, GRID_NY, type SweepGrid, type SweepTotals } from "./sweepGrid";
 import { expandRange, type RangeConfig } from "./sweepConfig";
+import { isInboundsLanding } from "../rebound/contest";
 
 export interface SweepWorkerStartMessage {
   type: "start";
@@ -45,6 +46,18 @@ export interface SweepWorkerOutboundMessage {
   grid: SweepGrid;
   totals: SweepTotals;
   shotsThisFlush: number;
+  // Flat [x,z,x,z,...] landing points for the scatter-dot renderer: the same
+  // recorded (excludeMade-gated) points as the grid above, further filtered
+  // to rimContacts > 0 — see the recording gate below.
+  points: Float32Array;
+  // Flat [x,z,x,z,...] landing points that QUALIFY for the rebound contest
+  // (touched rim AND landed inbounds — src/rebound/contest.ts's own,
+  // slightly looser inbounds test, not the stricter landingValid the
+  // scatter dots above use). Deliberately NOT pre-tallied into a win/loss
+  // count here: the actual contestLanding() call (and therefore who wins
+  // each point) happens on the main thread instead, keeping the pairing/
+  // eligibility logic in one place rather than duplicated into the worker.
+  contestPoints: Float32Array;
 }
 
 const PROGRESS_INTERVAL_MS = 200;
@@ -71,20 +84,29 @@ function runSweep(msg: SweepWorkerStartMessage): void {
   let everSet = new Uint8Array(GRID_NX * GRID_NY);
   let totals = emptyTotals();
   let shotsThisFlush = 0;
+  let scatterPoints: number[] = [];
+  let contestPoints: number[] = [];
   let lastFlush = performance.now();
 
   const flush = (done: boolean) => {
     const outGrid = grid;
     const outTotals = totals;
     const outShots = shotsThisFlush;
+    const outPoints = Float32Array.from(scatterPoints);
+    const outContestPoints = Float32Array.from(contestPoints);
     const message: SweepWorkerOutboundMessage = {
       type: done ? "done" : "progress",
       workerId: msg.workerId,
       grid: outGrid,
       totals: outTotals,
       shotsThisFlush: outShots,
+      points: outPoints,
+      contestPoints: outContestPoints,
     };
-    self.postMessage(message, [outGrid.counts.buffer, outGrid.rimTouchCounts.buffer, outGrid.params.buffer]);
+    self.postMessage(
+      message,
+      [outGrid.counts.buffer, outGrid.rimTouchCounts.buffer, outGrid.params.buffer, outPoints.buffer, outContestPoints.buffer],
+    );
     // The transferred buffers are now neutered on this side — allocate fresh
     // ones to keep accumulating. `everSet` is deliberately NOT reset: it's
     // this worker's memory of which cells it has already recorded a
@@ -93,6 +115,8 @@ function runSweep(msg: SweepWorkerStartMessage): void {
     grid = createEmptyGrid();
     totals = emptyTotals();
     shotsThisFlush = 0;
+    scatterPoints = [];
+    contestPoints = [];
   };
 
   outer: for (const angleDeg of msg.angleValues) {
@@ -118,6 +142,38 @@ function runSweep(msg: SweepWorkerStartMessage): void {
             totals.recordedCount++;
             if (point[1] < 0) totals.nearSideCount++;
             else totals.farSideCount++;
+            // Scatter-dot list: same point, further restricted to shots that
+            // (a) actually touched the rim — a clean swish or an airball that
+            // never reaches the rim contributes nothing to the rebound study
+            // — and (b), when recording the floor landing specifically,
+            // physically valid (result.landingValid is computed against
+            // floorPoint — see core.ts — so it only applies in that mode;
+            // catchPoint recording isn't a currently-reachable config, but
+            // this keeps the guard from misapplying to the wrong point if it
+            // ever is).
+            const touchedRim = result.rimContacts > 0;
+            const isValidLanding = msg.record !== "floorPoint" || result.landingValid;
+            if (touchedRim && isValidLanding) {
+              scatterPoints.push(point[0], point[1]);
+            }
+          }
+
+          // Rebound-contest qualifying points (src/rebound/contest.ts):
+          // always keyed off the actual FLOOR landing point, independent of
+          // `msg.record` (the scatter/grid recording above can be in
+          // catchPoint mode) — a rebound is contested where the ball hits
+          // the floor, per spec. Same rim-touch gate as the scatter dots; a
+          // made shot never gets here at all (this whole block is skipped
+          // when excludeMade+isMade) since a shot that goes in never
+          // produces a rebound to contest. Only the qualifying POINT is
+          // collected here, not a win/loss tally — see contestPoints' own
+          // comment above for why.
+          if (result.rimContacts > 0 && result.floorPoint) {
+            if (isInboundsLanding(result.floorPoint[0], result.floorPoint[1])) {
+              contestPoints.push(result.floorPoint[0], result.floorPoint[1]);
+            } else {
+              totals.contestOutOfBounds++;
+            }
           }
         }
 

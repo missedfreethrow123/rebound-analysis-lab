@@ -9,7 +9,7 @@
 // call site's job to only invoke it after hydration, same as the rest of the
 // physics/rendering stack.
 
-import { createEmptyGrid, mergeGrid, emptyTotals, addTotals, computeStats, GRID_NX, GRID_NY, type SweepGrid, type SweepStats, type SweepTotals } from "./sweepGrid";
+import { createEmptyGrid, mergeGrid, mergePoints, emptyTotals, addTotals, computeStats, GRID_NX, GRID_NY, type SweepGrid, type SweepStats, type SweepTotals } from "./sweepGrid";
 import { expandRange, splitEvenly, totalShotCount, type SweepConfig } from "./sweepConfig";
 import type { SweepWorkerOutboundMessage, SweepWorkerStartMessage, SweepWorkerCancelMessage } from "./sweep.worker";
 
@@ -20,6 +20,15 @@ const STATS_RECOMPUTE_INTERVAL_MS = 100; // throttles the O(NX*NY log) hottest-c
 export interface SweepProgress {
   grid: SweepGrid;
   stats: SweepStats;
+  // Flat [x,z,x,z,...] rim-touching-miss landing points for the scatter-dot
+  // renderer — see sweep.worker.ts's recording gate. A fresh array each
+  // delivery (unlike `grid`, which is mutated/reused in place), since it
+  // grows across the sweep's lifetime rather than staying a fixed size.
+  points: Float32Array;
+  // Flat [x,z,x,z,...] landing points qualifying for the rebound contest
+  // (touched rim AND landed inbounds) — see sweep.worker.ts's contestPoints
+  // comment for why the win/loss split isn't pre-computed here.
+  contestPoints: Float32Array;
   shotsCompleted: number;
   totalShotsPlanned: number;
   done: boolean;
@@ -41,6 +50,8 @@ export function startSweep(config: SweepConfig, onProgress: (progress: SweepProg
   const grid = createEmptyGrid();
   const everSet = new Uint8Array(GRID_NX * GRID_NY);
   let totals: SweepTotals = emptyTotals();
+  let points: Float32Array = new Float32Array(0);
+  let contestPoints: Float32Array = new Float32Array(0);
   let shotsCompleted = 0;
   let lastStatsComputeAt = 0;
   let cachedStats: SweepStats = computeStats(grid, totals);
@@ -55,7 +66,7 @@ export function startSweep(config: SweepConfig, onProgress: (progress: SweepProg
       cachedStats = computeStats(grid, totals);
       lastStatsComputeAt = now;
     }
-    onProgress({ grid, stats: cachedStats, shotsCompleted, totalShotsPlanned, done });
+    onProgress({ grid, stats: cachedStats, points, contestPoints, shotsCompleted, totalShotsPlanned, done });
   };
 
   for (let i = 0; i < angleSlices.length; i++) {
@@ -68,6 +79,8 @@ export function startSweep(config: SweepConfig, onProgress: (progress: SweepProg
       const msg = event.data as SweepWorkerOutboundMessage;
       mergeGrid(grid, everSet, msg.grid);
       totals = addTotals(totals, msg.totals);
+      points = mergePoints(points, msg.points);
+      contestPoints = mergePoints(contestPoints, msg.contestPoints);
       shotsCompleted += msg.shotsThisFlush;
 
       if (msg.type === "done") {

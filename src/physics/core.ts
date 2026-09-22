@@ -85,6 +85,11 @@ export interface ShotResult {
   trajectory: Float32Array; // flat [t,x,y,z, t,x,y,z, ...] for animation, decimated except collision moments, which are always sampled exactly (see core.ts)
   rimContacts: number;
   floorPoint: [number, number] | null; // first floor contact, metres
+  // Whether floorPoint (if any) is a physically sane rebound spot: inside the
+  // court, not behind the backboard's plane, not degenerately under the
+  // hoop's own axis. False whenever floorPoint is null. See its computation
+  // below for why this can't just reuse `outcome === "out_of_bounds"`.
+  landingValid: boolean;
   catchPoint: [number, number] | null; // where it last descends through CATCH_HEIGHT_M before landing — defined for every miss (airball, backboard-only, or rim-touching), not just rim contacts; null only if the ball never reaches CATCH_HEIGHT_M while still airborne (e.g. an already-low trajectory)
   catchTime: number | null; // seconds from release
   catchSpeed: number | null; // m/s at that moment
@@ -101,6 +106,7 @@ export interface ShotResult {
   floorTime: number | null; // seconds from release to first floor contact
   floorImpactSpeed: number | null; // m/s, measured the same way the original UI did: *after* the floor's restitution/friction is applied, not the raw incoming speed
   firstImpactTime: number | null; // seconds from release to the first contact with rim, backboard, or floor (whichever comes first) — lets a UI preview truncate the flight the same way the pre-refactor implementation did, without a second physics pass
+  firstRimContactTime: number | null; // seconds from release to the first RIM contact specifically (null if the ball never touches the rim) — used by src/rebound's contest model as t_rim, distinct from firstImpactTime which can be an earlier backboard-only hit
 
   // True if the simulation hit SIM_MAX_DURATION_S (the hard cap) without ever
   // settling below the stop threshold. Should never happen in practice —
@@ -117,6 +123,14 @@ const BACKBOARD_Y_M = RIM_HEIGHT_M + BACKBOARD_Y_ABOVE_RIM_M;
 const SIDELINE_X_M = COURT_WIDTH_M / 2;
 const HALF_COURT_Z_M = BASELINE_TO_RIM_M - HALF_COURT_LENGTH_M;
 const BASELINE_Z_M = BASELINE_TO_RIM_M;
+
+// A landing within this radius of the hoop's own vertical axis (the rim's
+// floor projection) is a degenerate artifact, not a real rebound spot — the
+// support pole/net cone physically occupy that space, and a ball genuinely
+// can't come to rest exactly under the rim it just touched. Tied to
+// RIM_RADIUS_M (not an arbitrary distance) since anything closer than the
+// rim's own radius to dead-centre is inside the hoop assembly's own footprint.
+const UNDER_HOOP_EXCLUSION_RADIUS_M = RIM_RADIUS_M;
 
 const WALL_X_MIN = -SIDELINE_X_M - WALL_MARGIN_X_M;
 const WALL_X_MAX = SIDELINE_X_M + WALL_MARGIN_X_M;
@@ -286,6 +300,12 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
   let floorTime: number | null = null;
   let floorImpactSpeed: number | null = null;
   let firstImpactTime: number | null = null;
+  // Distinct from firstImpactTime above (which can be a backboard-only hit
+  // that precedes any rim contact) — the rebound-contest model (src/rebound)
+  // needs the exact moment the ball first touches the RIM specifically, since
+  // players may only start moving REACTION_S after that instant, not after
+  // an earlier backboard graze.
+  let firstRimContactTime: number | null = null;
   let maxHeight = posY;
   let travelDist = 0;
 
@@ -400,25 +420,50 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
     }
 
     // Backboard: flat plane at z = BACKBOARD_Z_M, outward normal (0,0,-1).
-    // Crossing test (instead of a fixed epsilon shell) so a fast ball can't
-    // tunnel through in one step.
+    // Solid-VOLUME crossing test, not just a Z-plane crossing: the old version
+    // only fired when the ball was ALREADY within the board's X/Y footprint
+    // AND crossed the Z plane on this exact step (wasInFront checked only
+    // prevZ). That misses a real tunnelling path — a ball can cross the Z
+    // plane while outside the X/Y footprint (correctly not colliding, since
+    // it's genuinely beside the board) and then curve sideways INTO the
+    // footprint on a later step while already behind the plane; by then
+    // `wasInFront` is false every step, so no collision ever fires and the
+    // ball ends up with a recorded landing point behind solid backboard.
+    // Confirmed empirically: shots exist (e.g. angle 20-32, aim near 0, speed
+    // 8-12) whose rim-touched trajectory ends up behind BACKBOARD_Z_M within
+    // the board's own width. Testing "was the ball outside the board's solid
+    // volume last step (all three axes, at the PREVIOUS position), is it
+    // inside now" catches every entry path, not just a straight-on approach.
     {
+      const front = BACKBOARD_Z_M;
       const withinX = Math.abs(posX) < BACKBOARD_W_M / 2 + BALL_RADIUS_M;
       const withinY =
         posY > BACKBOARD_Y_M - BACKBOARD_H_M / 2 - BALL_RADIUS_M && posY < BACKBOARD_Y_M + BACKBOARD_H_M / 2 + BALL_RADIUS_M;
-      if (withinX && withinY) {
-        const front = BACKBOARD_Z_M;
-        const wasInFront = prevZ + BALL_RADIUS_M <= front;
-        const isPast = posZ + BALL_RADIUS_M > front;
-        if (wasInFront && isPast && velZ > 0) {
+      const isPast = posZ + BALL_RADIUS_M > front;
+      if (withinX && withinY && isPast) {
+        const wasWithinX = Math.abs(prevX) < BACKBOARD_W_M / 2 + BALL_RADIUS_M;
+        const wasWithinY =
+          prevY > BACKBOARD_Y_M - BACKBOARD_H_M / 2 - BALL_RADIUS_M && prevY < BACKBOARD_Y_M + BACKBOARD_H_M / 2 + BALL_RADIUS_M;
+        const wasPast = prevZ + BALL_RADIUS_M > front;
+        const wasInsideBoard = wasWithinX && wasWithinY && wasPast;
+        if (!wasInsideBoard) {
+          // Position correction is a pure geometric constraint (the ball must
+          // never be inside solid matter) and always applies once a new
+          // penetration is detected. The velocity reflection below only
+          // makes physical sense while still approaching along the board's
+          // outward normal (velZ > 0) — applying it to a ball that (rarely)
+          // enters the footprint while already moving away in Z would
+          // incorrectly re-reflect an already-correct velocity.
           posZ = front - BALL_RADIUS_M;
-          const resolved = applyContactImpulse(velX, velY, velZ, spinX, spinY, spinZ, 0, 0, -1, BACKBOARD_RESTITUTION, FRICTION_BACKBOARD);
-          velX = resolved.velX;
-          velY = resolved.velY;
-          velZ = resolved.velZ;
-          spinX = resolved.spinX;
-          spinY = resolved.spinY;
-          spinZ = resolved.spinZ;
+          if (velZ > 0) {
+            const resolved = applyContactImpulse(velX, velY, velZ, spinX, spinY, spinZ, 0, 0, -1, BACKBOARD_RESTITUTION, FRICTION_BACKBOARD);
+            velX = resolved.velX;
+            velY = resolved.velY;
+            velZ = resolved.velZ;
+            spinX = resolved.spinX;
+            spinY = resolved.spinY;
+            spinZ = resolved.spinZ;
+          }
           backboardHit = true;
           // Re-arm the catch point: the ball's path just changed, so any
           // earlier candidate (from before this bounce) no longer reflects
@@ -468,6 +513,7 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
           catchTime = null;
           catchSpeed = null;
           if (firstImpactTime === null) firstImpactTime = t;
+          if (firstRimContactTime === null) firstRimContactTime = t;
           maybeSample(t);
         }
       }
@@ -592,11 +638,29 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
     outcome = "airball";
   }
 
+  // Whether floorPoint is a physically sane rebound spot — independent of
+  // `outcome` above, which only classifies out-of-bounds for the rimContacts
+  // === 0 branch (a rim-touching shot can never reach that branch, since
+  // rimContacts > 0 takes priority in the if/else chain), so it can't be
+  // reused here for a rim-touching shot's own landing. Three ways a landing
+  // is invalid: outside the court's playing area, behind the backboard's own
+  // plane (impossible once the backboard properly blocks the ball — see the
+  // solid-volume collision fix above; kept as a defensive check on top of
+  // that fix, not instead of it), or degenerate-under-the-hoop.
+  const landingValid =
+    floorPoint !== null &&
+    Math.abs(floorPoint[0]) <= SIDELINE_X_M &&
+    floorPoint[1] <= BASELINE_Z_M &&
+    floorPoint[1] >= HALF_COURT_Z_M &&
+    floorPoint[1] <= BACKBOARD_Z_M &&
+    Math.hypot(floorPoint[0], floorPoint[1] - RIM_Z_M) > UNDER_HOOP_EXCLUSION_RADIUS_M;
+
   return {
     outcome,
     trajectory: recordTrajectory ? Float32Array.from(trajectorySamples) : new Float32Array(0),
     rimContacts,
     floorPoint,
+    landingValid,
     catchPoint,
     catchTime,
     catchSpeed,
@@ -607,6 +671,7 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
     floorTime,
     floorImpactSpeed,
     firstImpactTime,
+    firstRimContactTime,
     hitStepCap,
   };
 }

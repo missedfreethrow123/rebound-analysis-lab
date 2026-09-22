@@ -17,8 +17,15 @@ import {
   BACKBOARD_Y_ABOVE_RIM_M,
   BALL_RADIUS_M,
 } from "@/physics/constants";
-import { GRID_NX, GRID_NY, GRID_CELL_SIZE_M, type SweepGrid } from "@/physics/sweepGrid";
-import { computeHeatmapPixels, type HeatmapLayer } from "@/rendering/heatmapPixels";
+import { PLAYERS, OFFENSE_COLOR, DEFENSE_COLOR } from "@/rebound/players";
+import { contestLanding, startDelayFor, type ContestResult } from "@/rebound/contest";
+import {
+  computeWinnerField,
+  WINNER_FIELD_OFFENSE,
+  WINNER_FIELD_DEFENSE,
+  WINNER_FIELD_CELL_SIZE_M,
+  WINNER_FIELD_CELL_SIZE_MOBILE_M,
+} from "@/rebound/winnerField";
 
 type Marker = { x: number; z: number; made: boolean };
 type Stats = {
@@ -107,31 +114,50 @@ const BALL_R = M(BALL_RADIUS_M); // size 6-ish
 const VISUAL_BASELINE_Z = BACKBOARD_Z + 0.6;
 
 // The key's paint color: normal saturated blue for ordinary play, muted to a
-// neutral tone while the heat map is showing (see the [heatmap] effect) so its
-// solid rectangle doesn't read as heat map "background" behind sparse data.
+// neutral tone while the rebound scatter is showing (see the [heatmap]
+// effect) so its solid rectangle doesn't visually compete with the dots.
 const KEY_COLOR_NORMAL = 0x0088ff;
 const KEY_COLOR_MUTED = 0x2a2f36;
 
-// Heat map plane footprint — matches src/physics/sweepGrid.ts's grid exactly
-// (same cell size and axis convention), so a texture built from a SweepGrid
-// lines up with the court underneath it with no separate offset to get wrong.
-const HEATMAP_WIDTH = M(GRID_NX * GRID_CELL_SIZE_M); // world x span, centered on x=0
-const HEATMAP_DEPTH = M(GRID_NY * GRID_CELL_SIZE_M); // world z span, from the baseline back toward half-court
-const HEATMAP_CENTER_Z = BASELINE_Z - HEATMAP_DEPTH / 2;
-// Between the key's paint (y=0.002) and the painted lines (y=0.004): visible
-// over the court surface/paint, but the white lines still render crisply on
-// top of it, per HEATMAP_SPEC.md's "underneath the court lines... not on top."
-const HEATMAP_Y = 0.003;
-// The sweep grid itself never records a sample beyond the true BASELINE_Z
-// (worldToCell rejects it), so no rebound data exists past the real end line.
-// But the heat map PLANE's own geometry still spans all the way to that true
-// baseline, which — now that the *visual* court/support pulled in to
-// VISUAL_BASELINE_Z (see that constant) — means the plane itself would poke
-// past the shortened court into the out-of-bounds strip. This is the v (row)
-// fraction, in the plane's own UV space, below which a fragment's world-z
-// would land beyond VISUAL_BASELINE_Z; the heat map shader discards anything
-// under it, so the drawn heat map never extends past the (now shorter) court.
-const HEATMAP_CLIP_MIN_V = Math.max(0, (BASELINE_Z - VISUAL_BASELINE_Z) / HEATMAP_DEPTH);
+// Depth of the area the sweep records over (src/physics/sweepGrid.ts's grid:
+// baseline to half-court, 14m) — kept here only to center the orthographic
+// top-down camera on that same area (see orthoCamera below); the sweep grid
+// itself no longer has an on-court visual footprint to size or clip a mesh
+// to now that rebounds are drawn as individual scatter dots instead.
+const SWEEP_AREA_DEPTH_M = 14;
+const HEATMAP_CENTER_Z = BASELINE_Z - SWEEP_AREA_DEPTH_M / 2;
+
+// Rebound scatter dots: flat, semi-transparent discs at each rim-touching
+// miss's landing point — see the [heatmap] effect below. Uniform colour and
+// opacity for every dot; density reads purely from dots overlapping, never
+// from per-instance colouring (that's the whole point of a scatter plot over
+// a density heat map).
+const SCATTER_DOT_RADIUS_M = M(0.075); // ~0.5% of COURT_WIDTH_M (15m) — small enough to read as individual points, not blobs, even where many overlap
+const SCATTER_DOT_COLOR = 0x3b82c4;
+const SCATTER_DOT_Y = 0.02; // above the floor (0), key paint (0.002), and painted lines (0.004) — sits on top, like ink on the court
+
+// Rebound-contest winner map (src/rebound/winnerField.ts): one flat square
+// InstancedMesh cell per grid sample, tinted green (offense) or purple
+// (defense) via per-instance vertex colour, uniform material opacity. Sits
+// BELOW the scatter dots (SCATTER_DOT_Y above) but above the key/court-line
+// paint, so it reads as a background wash the dots overlay on top of, per
+// the heat-map winner-map spec.
+const WINNER_FIELD_Y = 0.01;
+const WINNER_FIELD_OPACITY = 0.45;
+const WINNER_FIELD_NEUTRAL_COLOR = 0x888888; // tie/out-of-bounds cells — practically never occurs in this region
+
+// Rebound-contest one-shot visualisation: the 5 fixed player discs (always
+// visible, at their fixed FIBA lane-space start positions — see
+// src/rebound/players.ts) plus the ephemeral orange landing marker and faint
+// path lines drawn only while a contest is animating.
+const CONTEST_PLAYER_RADIUS_M = M(0.22);
+const CONTEST_PLAYER_Y = 0.03; // above the scatter dots/winner field, never obscured by either
+const CONTEST_MARKER_RADIUS_M = M(0.1);
+const CONTEST_MARKER_COLOR = 0xffa500;
+const CONTEST_MARKER_Y = 0.032;
+const CONTEST_PATH_Y = 0.028;
+const CONTEST_WINNER_HIGHLIGHT_SCALE = 1.6;
+const CONTEST_LABEL_DURATION_MS = 2200;
 
 // Exactly two fixed camera angles, hard-switched (no in-between motion): the default
 // behind-the-shooter view, and an overhead "hoop cam" used while the shot is in flight.
@@ -427,6 +453,7 @@ export default function FreeThrowSim({
   onCanShootChange,
   heatmap,
   controlsOpen = true,
+  isMobile = false,
 }: {
   controls: SimControls;
   shootTrigger: number;
@@ -434,15 +461,20 @@ export default function FreeThrowSim({
   onLanding: (m: Marker) => void;
   markers: Marker[];
   onCanShootChange?: (canShoot: boolean) => void;
-  // Optional: when set, renders a heat map texture under the court lines.
-  // Phase 5 owns actually running a sweep and passing its grid in here — this
-  // component only knows how to draw whatever grid it's given.
-  heatmap?: { grid: SweepGrid; opacity: number; layer: HeatmapLayer } | null;
+  // Optional: when set, draws one flat scatter dot per landing point on the
+  // court floor. routes/index.tsx owns running the sweep and filtering to
+  // rim-touching misses — this component only knows how to draw whatever
+  // points it's given. `points` is flat [x,z,x,z,...] world coordinates.
+  heatmap?: { points: Float32Array; opacity: number } | null;
   // Whether the mobile bottom sheet (the controls panel — see routes/index.tsx)
   // is currently open. Only used in portrait, on phones, to keep the aim box
   // riding just above the sheet instead of getting covered by it — see the
   // preview mount's className/style below.
   controlsOpen?: boolean;
+  // Only affects the rebound-contest winner-map cell size (coarser on
+  // mobile, same idea as the existing coarser sweep) — see the [heatmap]
+  // effect below.
+  isMobile?: boolean;
 }) {
   const mountRef = useRef<HTMLDivElement>(null);
   // The bottom-right aim-preview box: doubles as both the mount point for its
@@ -482,11 +514,29 @@ export default function FreeThrowSim({
     trajCursor: number; // index (in samples, not floats) into result.trajectory, advances monotonically during playback
     landingFired: boolean; // whether onLanding has fired for the in-progress flight
     canShoot: boolean;
-    heatmapMesh?: THREE.Mesh;
-    heatmapMaterial?: THREE.ShaderMaterial;
+    scatterMesh?: THREE.InstancedMesh;
     keyMaterial?: THREE.MeshStandardMaterial;
-    heatmapTexture?: THREE.DataTexture;
-    heatmapPixelData?: Uint8Array;
+    winnerFieldMesh?: THREE.InstancedMesh;
+    // Rebound-contest one-shot visualisation (src/rebound/contest.ts drives
+    // the math; everything here is just the Three.js side of playing it
+    // back). Player meshes/marker/path lines are created once at scene-init
+    // and reused for every shot — only contestAnim changes per landing.
+    contestPlayerMeshes?: THREE.Mesh[]; // indexed the same as PLAYERS
+    contestMarkerMesh?: THREE.Mesh;
+    contestPathGroup?: THREE.Group;
+    contestClearPaths?: () => void;
+    contestAnim?: {
+      tRimStartMs: number; // performance.now() timestamp of t_rim (ball's first rim contact) for THIS flight
+      // Per player id, tRimStartMs + startDelayFor(id)*1000 — the shooter
+      // starts later than everyone else (their own recovery delay), so this
+      // can't be a single shared value. An INELIGIBLE attacker (idealized
+      // box-out) has no entry at all here — see the kickoff logic below.
+      moveStartMsById: Record<string, number>;
+      P: { x: number; z: number };
+      arrivalMsById: Record<string, number>; // per player id, tRimStartMs + arrival*1000
+      winnerId: string | null; // null for "out"/"tie" — no single highlight then
+      highlighted: boolean; // whether the winner highlight has already fired for this contest
+    } | null;
   }>({
     flying: false,
     canShoot: true,
@@ -497,6 +547,11 @@ export default function FreeThrowSim({
     landingFired: false,
   });
   const [cameraMode, setCameraMode] = useState<"perspective" | "orthographic">("perspective");
+  // Brief "Offense/Defense gets the rebound" banner — set once when a
+  // contest's winner highlight fires (see the animate() loop), cleared by
+  // its own timeout a couple seconds later. Only a rim-touching shot with a
+  // clear (non-tie, inbounds) winner ever sets this.
+  const [contestLabel, setContestLabel] = useState<string | null>(null);
 
   // init scene once
   useEffect(() => {
@@ -651,84 +706,23 @@ export default function FreeThrowSim({
     key.receiveShadow = true;
     scene.add(key);
 
-    // Heat map layer: a single NX x NY-pixel canvas (150x140), scaled up to
-    // the court via the plane's world size rather than drawing one rectangle
-    // per cell (HEATMAP_SPEC.md: "Do not draw 21,000 rectangles"). Starts
-    // invisible/empty; the [heatmap] effect below fills it in and toggles
-    // visibility whenever the sweep result, opacity, or layer prop changes.
-    // texture.flipY = false because the canvas is filled with row 0 = grid
-    // iy = 0 = the baseline (see the [heatmap] effect) — with flipY at its
-    // default true, that mapping would come out mirrored front-to-back.
-    const heatmapPixelData = new Uint8Array(GRID_NX * GRID_NY * 4);
-    const heatmapTexture = new THREE.DataTexture(heatmapPixelData, GRID_NX, GRID_NY, THREE.RGBAFormat, THREE.UnsignedByteType);
-    heatmapTexture.flipY = false;
-    heatmapTexture.magFilter = THREE.LinearFilter;
-    // Trilinear filtering + real mipmaps: this texture is heavily minified
-    // (150x140 texels stretched over a 15x14m plane, often viewed from far
-    // away) and NPOT mipmapping needs WebGL2 (confirmed this renderer uses
-    // hardware WebGL2 via ANGLE, not the WebGL1-only NPOT restriction).
-    heatmapTexture.minFilter = THREE.LinearMipmapLinearFilter;
-    heatmapTexture.generateMipmaps = true;
-    heatmapTexture.wrapS = THREE.ClampToEdgeWrapping;
-    heatmapTexture.wrapT = THREE.ClampToEdgeWrapping;
-    heatmapTexture.needsUpdate = true;
-    // A custom opaque + alphaTest-style shader, deliberately NOT using real
-    // alpha blending (transparent:true). On this renderer/GPU combination
-    // (verified: hardware WebGL2 via ANGLE, not a software fallback),
-    // alpha-blending a varying-alpha texture over the court produced
-    // corrupted colour — cyan/pure-primary blotches with channel values
-    // (e.g. R=0 alongside G>230) that are mathematically impossible from any
-    // correct blend of this ramp's colours, confirmed via direct pixel
-    // readback at every stage (canvas/texture data was always correct; only
-    // the GPU's blended output was wrong). This reproduced identically across
-    // MeshBasicMaterial and a from-scratch ShaderMaterial, with premultiplied
-    // vs. straight alpha, with depthTest on/off, and independent of colour
-    // space/tone-mapping/fog/NPOT-mipmap settings — narrowing it to the
-    // GL_BLEND path itself on this hardware, not anything under this app's
-    // control. Rendering fully opaque (confirmed correct in isolation) and
-    // using `discard` for empty cells sidesteps GL blending entirely: the
-    // court shows through untouched where there's no data, and where there
-    // is, the colour is guaranteed correct.
+    // Rebound scatter dots (rim-touching misses only) are built and torn down
+    // entirely by the [heatmap] effect below, on demand — there's no
+    // persistent placeholder mesh here the way the old heat map plane had
+    // one (it doesn't need one: InstancedMesh count is fixed at construction
+    // time anyway, so a fresh mesh gets built for every new point set).
     //
-    // Trade-off: no true partial transparency, so the "opacity" control
-    // can't do real alpha blending either. Instead it raises the visibility
-    // threshold — turning it down hides the faintest (most spread-out) cells
-    // first and keeps only the hottest core, converging on "nothing visible"
-    // as it approaches 0, which reads similarly to fading out in practice.
-    const heatmapMaterial = new THREE.ShaderMaterial({
-      uniforms: { map: { value: heatmapTexture }, opacity: { value: 0.7 }, clipMinV: { value: HEATMAP_CLIP_MIN_V } },
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform sampler2D map;
-        uniform float opacity;
-        uniform float clipMinV;
-        varying vec2 vUv;
-        void main() {
-          // v=0 is the baseline row (see the DataTexture's flipY=false note below);
-          // anything under clipMinV falls between the true baseline and the
-          // shorter, pulled-in visual court, so it never gets painted.
-          if (vUv.y < clipMinV) discard;
-          vec4 texColor = texture2D(map, vUv);
-          float threshold = mix(0.02, 0.95, 1.0 - opacity);
-          if (texColor.a < threshold) discard;
-          gl_FragColor = vec4(texColor.rgb, 1.0);
-        }
-      `,
-      transparent: false,
-      depthWrite: true,
-      depthTest: true,
-    });
-    const heatmapMesh = new THREE.Mesh(new THREE.PlaneGeometry(HEATMAP_WIDTH, HEATMAP_DEPTH), heatmapMaterial);
-    heatmapMesh.rotation.x = -Math.PI / 2;
-    heatmapMesh.position.set(0, HEATMAP_Y, HEATMAP_CENTER_Z);
-    heatmapMesh.visible = false;
-    scene.add(heatmapMesh);
+    // NOTE for whoever touches this next: the heat map this replaced used a
+    // custom discard-based shader instead of real alpha blending specifically
+    // because transparent:true blending of a VARYING-alpha TEXTURE over the
+    // court corrupted colour on this hardware (WebGL2 via ANGLE) — confirmed
+    // via direct pixel readback, independent of shader/blend-mode settings
+    // tried. The scatter dots below use transparent:true with a flat, no-map
+    // MeshBasicMaterial instead (uniform alpha per fragment, no texture
+    // sample) — a different-enough case that it rendered correctly when
+    // checked, but if this ever shows the same symptom (impossible channel
+    // combinations, e.g. R=0 alongside G>230), switch the material to
+    // THREE.AdditiveBlending rather than re-introducing a discard shader.
 
     // Thick painted white line helper
     const paintLine = (pts: THREE.Vector3[], width = 0.06) => {
@@ -1055,6 +1049,45 @@ export default function FreeThrowSim({
     trajLine.layers.set(MAIN_VIEW_TRAJ_LAYER);
     scene.add(trajLine);
 
+    // Rebound-contest players (src/rebound/players.ts): 5 flat team-coloured
+    // discs at their fixed FIBA lane-space start positions, always visible —
+    // a permanent court fixture, not something that pops in/out per shot.
+    // Only their POSITION and one mesh's highlight (scale) change per shot,
+    // driven entirely from the animate() loop below off the already-computed
+    // ShotResult — no new props, no second physics pass.
+    const contestPlayerMeshes: THREE.Mesh[] = PLAYERS.map((p) => {
+      const geo = new THREE.CircleGeometry(CONTEST_PLAYER_RADIUS_M, 24);
+      const mat = new THREE.MeshBasicMaterial({ color: p.team === "offense" ? OFFENSE_COLOR : DEFENSE_COLOR });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.set(p.x, CONTEST_PLAYER_Y, p.z);
+      scene.add(mesh);
+      return mesh;
+    });
+
+    // Landing-point marker P: a small neutral orange dot, hidden until the
+    // first rim-touching miss actually lands.
+    const contestMarkerMesh = new THREE.Mesh(
+      new THREE.CircleGeometry(CONTEST_MARKER_RADIUS_M, 16),
+      new THREE.MeshBasicMaterial({ color: CONTEST_MARKER_COLOR }),
+    );
+    contestMarkerMesh.rotation.x = -Math.PI / 2;
+    contestMarkerMesh.visible = false;
+    scene.add(contestMarkerMesh);
+
+    // Path lines: one faint line per player from their start position to P,
+    // rebuilt fresh for each contest (see the animate() loop) and hidden
+    // until the first one plays.
+    const contestPathGroup = new THREE.Group();
+    scene.add(contestPathGroup);
+    const clearContestPaths = () => {
+      while (contestPathGroup.children.length) {
+        const c = contestPathGroup.children.pop() as THREE.Line;
+        c.geometry?.dispose();
+        (c.material as THREE.Material)?.dispose();
+      }
+    };
+
     // Stadium — oval crowd tier with sparkles and LED ribbon
     const crowdCanvas = document.createElement("canvas");
     crowdCanvas.width = 1024; crowdCanvas.height = 256;
@@ -1210,11 +1243,11 @@ export default function FreeThrowSim({
     stateRef.current.ball = ball;
     stateRef.current.markerGroup = markerGroup;
     stateRef.current.trajLine = trajLine;
-    stateRef.current.heatmapMesh = heatmapMesh;
-    stateRef.current.heatmapMaterial = heatmapMaterial;
     stateRef.current.keyMaterial = keyMat;
-    stateRef.current.heatmapTexture = heatmapTexture;
-    stateRef.current.heatmapPixelData = heatmapPixelData;
+    stateRef.current.contestPlayerMeshes = contestPlayerMeshes;
+    stateRef.current.contestMarkerMesh = contestMarkerMesh;
+    stateRef.current.contestPathGroup = contestPathGroup;
+    stateRef.current.contestClearPaths = clearContestPaths;
 
     // Position ball at release
     const rp = releasePosition(controls);
@@ -1265,6 +1298,66 @@ export default function FreeThrowSim({
           st.landingFired = true;
           const [fx, fz] = st.result.floorPoint!;
           onLanding({ x: fx, z: fz, made: st.result.outcome === "made" });
+
+          // Rebound contest (src/rebound/contest.ts) — only for shots that
+          // actually touched the rim; a clean swish or airball never
+          // produces a rebound to contest (see contest.ts's module comment).
+          // Reuses this exact landing point, computed nowhere else.
+          if (st.contestPlayerMeshes) {
+            for (const mesh of st.contestPlayerMeshes) mesh.scale.set(1, 1, 1);
+          }
+          if (st.result.rimContacts > 0 && st.result.firstRimContactTime !== null && st.contestMarkerMesh) {
+            const contest: ContestResult = contestLanding(fx, fz);
+            if (contest.winnerTeam === "out") {
+              // No rebound to contest — ball is out of bounds. Players stay
+              // at their fixed spots, no marker, no animation.
+              st.contestAnim = null;
+              st.contestMarkerMesh.visible = false;
+              clearContestPaths();
+            } else {
+              st.contestMarkerMesh.visible = true;
+              st.contestMarkerMesh.position.set(fx, CONTEST_MARKER_Y, fz);
+
+              const tRimStartMs = st.playStartTime + st.result.firstRimContactTime * 1000;
+              const arrivalMsById: Record<string, number> = {};
+              const moveStartMsById: Record<string, number> = {};
+              // Ineligible attackers (idealized box-out — see contest.ts's
+              // isAttackerEligible) deliberately get NO entry here: the
+              // per-frame animation loop treats a missing id as "stay at
+              // start position," which is exactly "visibly fail to reach
+              // it" without any extra state to track.
+              for (const a of contest.arrivals) {
+                if (!a.eligible) continue;
+                arrivalMsById[a.id] = tRimStartMs + a.arrival * 1000;
+                moveStartMsById[a.id] = tRimStartMs + startDelayFor(a.id) * 1000;
+              }
+
+              st.contestAnim = {
+                tRimStartMs,
+                moveStartMsById,
+                P: contest.P,
+                arrivalMsById,
+                winnerId: contest.winnerTeam === "tie" ? null : contest.winnerId,
+                highlighted: false,
+              };
+
+              clearContestPaths();
+              const pathMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 });
+              for (const p of PLAYERS) {
+                const geo = new THREE.BufferGeometry().setFromPoints([
+                  new THREE.Vector3(p.x, CONTEST_PATH_Y, p.z),
+                  new THREE.Vector3(fx, CONTEST_PATH_Y, fz),
+                ]);
+                contestPathGroup.add(new THREE.Line(geo, pathMat));
+              }
+            }
+          } else {
+            // Shot never touched the rim — "show no contest" (spec): no
+            // marker, no path lines, players stay put.
+            st.contestAnim = null;
+            if (st.contestMarkerMesh) st.contestMarkerMesh.visible = false;
+            clearContestPaths();
+          }
         }
 
         const finalT = traj[(sampleCount - 1) * 4];
@@ -1293,6 +1386,46 @@ export default function FreeThrowSim({
           }, 800);
         }
       }
+
+      // Rebound-contest playback: runs every frame independent of st.flying
+      // — players keep running toward the rebound spot for a bit after the
+      // ball itself has already landed (and possibly finished settling).
+      if (st.contestAnim && st.contestPlayerMeshes) {
+        const anim = st.contestAnim;
+        const nowMs = now;
+        for (let i = 0; i < PLAYERS.length; i++) {
+          const p = PLAYERS[i];
+          const mesh = st.contestPlayerMeshes[i];
+          const arrivalMs = anim.arrivalMsById[p.id];
+          const moveStartMs = anim.moveStartMsById[p.id];
+          if (arrivalMs === undefined || moveStartMs === undefined || nowMs <= moveStartMs) {
+            mesh.position.set(p.x, CONTEST_PLAYER_Y, p.z);
+            continue;
+          }
+          const travelMs = Math.max(1e-6, arrivalMs - moveStartMs);
+          const frac = Math.min(1, (nowMs - moveStartMs) / travelMs);
+          mesh.position.set(p.x + (anim.P.x - p.x) * frac, CONTEST_PLAYER_Y, p.z + (anim.P.z - p.z) * frac);
+        }
+
+        if (!anim.highlighted && anim.winnerId !== null) {
+          const winnerArrivalMs = anim.arrivalMsById[anim.winnerId];
+          if (winnerArrivalMs !== undefined && nowMs >= winnerArrivalMs) {
+            anim.highlighted = true;
+            const winnerIndex = PLAYERS.findIndex((p) => p.id === anim.winnerId);
+            if (winnerIndex >= 0) {
+              st.contestPlayerMeshes[winnerIndex].scale.set(
+                CONTEST_WINNER_HIGHLIGHT_SCALE,
+                CONTEST_WINNER_HIGHLIGHT_SCALE,
+                CONTEST_WINNER_HIGHLIGHT_SCALE,
+              );
+              const winnerTeam = PLAYERS[winnerIndex].team;
+              setContestLabel(winnerTeam === "offense" ? "Offense gets the rebound" : "Defense gets the rebound");
+              setTimeout(() => setContestLabel(null), CONTEST_LABEL_DURATION_MS);
+            }
+          }
+        }
+      }
+
       if (st.ball) ballLight.position.set(st.ball.position.x, st.ball.position.y + 0.6, st.ball.position.z);
       // Trajectory line: visible only while setting up a shot, hidden the
       // instant Shoot fires (st.flying) and back the moment it lands — same
@@ -1457,6 +1590,19 @@ export default function FreeThrowSim({
     st.landingFired = false;
     st.playStartTime = performance.now();
     st.trajCursor = 0;
+    // Clear any leftover contest visuals from the previous shot immediately
+    // — otherwise a stale P marker/highlighted winner from the last miss
+    // would sit on the court through this new shot's entire flight.
+    st.contestAnim = null;
+    if (st.contestMarkerMesh) st.contestMarkerMesh.visible = false;
+    st.contestClearPaths?.();
+    if (st.contestPlayerMeshes) {
+      for (let i = 0; i < PLAYERS.length; i++) {
+        st.contestPlayerMeshes[i].position.set(PLAYERS[i].x, CONTEST_PLAYER_Y, PLAYERS[i].z);
+        st.contestPlayerMeshes[i].scale.set(1, 1, 1);
+      }
+    }
+    setContestLabel(null);
     // Dolly the hoop cam back (same angle/target, only distance) so this
     // shot's own landing spot stays in frame — see fitCameraToLanding above.
     if (st.camera) {
@@ -1495,29 +1641,117 @@ export default function FreeThrowSim({
     }
   }, [markers]);
 
-  // Redraw the heat map texture whenever the sweep result, opacity, or layer
-  // selection changes. Building the pixel buffer is pure math (heatmapPixels.ts);
-  // this effect just copies it into the DataTexture already sitting in the scene.
+  // Rebuilds the rebound-scatter InstancedMesh whenever the sweep's point set
+  // or opacity changes (routes/index.tsx memoizes the `heatmap` prop so this
+  // only fires on a real content change, not every unrelated re-render).
+  // InstancedMesh's instance count is fixed at construction time, so unlike
+  // the old heat map's one persistent plane, this always tears down the
+  // previous mesh and builds a fresh one — cheap at this scale (typically a
+  // few thousand rim-touching misses, even for the full desktop sweep range).
   useEffect(() => {
     const st = stateRef.current;
-    if (!st.heatmapMesh || !st.heatmapMaterial || !st.heatmapTexture || !st.heatmapPixelData) return;
-    if (!heatmap) {
-      st.heatmapMesh.visible = false;
+    if (!st.scene) return;
+
+    if (st.scatterMesh) {
+      st.scene.remove(st.scatterMesh);
+      st.scatterMesh.geometry.dispose();
+      (st.scatterMesh.material as THREE.Material).dispose();
+      st.scatterMesh = undefined;
+    }
+    if (st.winnerFieldMesh) {
+      st.scene.remove(st.winnerFieldMesh);
+      st.winnerFieldMesh.geometry.dispose();
+      (st.winnerFieldMesh.material as THREE.Material).dispose();
+      st.winnerFieldMesh = undefined;
+    }
+
+    if (!heatmap || heatmap.points.length === 0) {
       st.keyMaterial?.color.setHex(KEY_COLOR_NORMAL);
       return;
     }
-    const pixels = computeHeatmapPixels(heatmap.grid, { layer: heatmap.layer });
-    st.heatmapPixelData.set(pixels);
-    st.heatmapTexture.needsUpdate = true;
-    st.heatmapMaterial.uniforms.opacity.value = heatmap.opacity;
-    st.heatmapMesh.visible = true;
-    // The key's own paint is a solid, saturated blue that — sitting right where
-    // most rebounds land — reads as a hard rectangular "background" competing
-    // with the heat map's warm colours over empty cells. Mute it to a neutral
-    // tone while the heat map is showing so only real density stands out; this
-    // recolours existing paint, it doesn't touch the heat map's own transparency.
+
+    const count = heatmap.points.length / 2;
+    const geometry = new THREE.CircleGeometry(SCATTER_DOT_RADIUS_M, 20);
+    const material = new THREE.MeshBasicMaterial({
+      color: SCATTER_DOT_COLOR,
+      transparent: true,
+      opacity: heatmap.opacity,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.InstancedMesh(geometry, material, count);
+    mesh.renderOrder = 1;
+
+    const dummy = new THREE.Object3D();
+    dummy.rotation.x = -Math.PI / 2; // lie flat on the XZ floor plane (same convention as the key/court-line planes)
+    for (let i = 0; i < count; i++) {
+      dummy.position.set(heatmap.points[i * 2], SCATTER_DOT_Y, heatmap.points[i * 2 + 1]);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+
+    st.scene.add(mesh);
+    st.scatterMesh = mesh;
+    // Same rationale as the old heat map: the key's solid, saturated paint
+    // sits right where most rebounds land and would otherwise compete with
+    // the (semi-transparent) dots. Mute it to a neutral tone while any
+    // scatter is showing; this recolours existing paint only, it doesn't
+    // touch the dots' own transparency.
     st.keyMaterial?.color.setHex(KEY_COLOR_MUTED);
-  }, [heatmap]);
+
+    // Winner map (src/rebound/winnerField.ts): one flat square instance per
+    // grid cell, tinted green/purple by contestLanding()'s winner — a pure
+    // function of the fixed player positions and the idealized box-out rule,
+    // recomputed fresh here (cheap: a few thousand cells of plain
+    // arithmetic, no simulate() calls) rather than cached. Sits below the
+    // scatter dots (WINNER_FIELD_Y < SCATTER_DOT_Y, renderOrder 0 < 1) so
+    // the dots read as an overlay on top of it.
+    const cellSizeM = isMobile ? WINNER_FIELD_CELL_SIZE_MOBILE_M : WINNER_FIELD_CELL_SIZE_M;
+    const field = computeWinnerField(cellSizeM);
+    const fieldGeometry = new THREE.PlaneGeometry(cellSizeM, cellSizeM);
+    // No `vertexColors: true` here: InstancedMesh's own per-instance colour
+    // (set via setColorAt below) is picked up automatically once
+    // mesh.instanceColor exists — that's a separate mechanism from
+    // `vertexColors`, which instead expects a per-vertex `color` geometry
+    // attribute this plane never has. Setting both together left the
+    // per-vertex path reading a nonexistent attribute, multiplying every
+    // instance's colour to black — this material only needs the instance path.
+    const fieldMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: WINNER_FIELD_OPACITY,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    const fieldMesh = new THREE.InstancedMesh(fieldGeometry, fieldMaterial, field.cells.length);
+    fieldMesh.renderOrder = 0;
+
+    const fieldDummy = new THREE.Object3D();
+    fieldDummy.rotation.x = -Math.PI / 2;
+    const offenseColor = new THREE.Color(OFFENSE_COLOR);
+    const defenseColor = new THREE.Color(DEFENSE_COLOR);
+    const neutralColor = new THREE.Color(WINNER_FIELD_NEUTRAL_COLOR);
+    for (let iy = 0; iy < field.ny; iy++) {
+      const z = field.zMin + (iy + 0.5) * field.cellSizeM;
+      for (let ix = 0; ix < field.nx; ix++) {
+        const x = field.xMin + (ix + 0.5) * field.cellSizeM;
+        const idx = iy * field.nx + ix;
+        fieldDummy.position.set(x, WINNER_FIELD_Y, z);
+        fieldDummy.updateMatrix();
+        fieldMesh.setMatrixAt(idx, fieldDummy.matrix);
+        const code = field.cells[idx];
+        const color = code === WINNER_FIELD_OFFENSE ? offenseColor : code === WINNER_FIELD_DEFENSE ? defenseColor : neutralColor;
+        fieldMesh.setColorAt(idx, color);
+      }
+    }
+    fieldMesh.instanceMatrix.needsUpdate = true;
+    if (fieldMesh.instanceColor) fieldMesh.instanceColor.needsUpdate = true;
+
+    st.scene.add(fieldMesh);
+    st.winnerFieldMesh = fieldMesh;
+  }, [heatmap, isMobile]);
 
   return (
     <div className="relative w-full h-full overscroll-none max-lg:portrait:overflow-hidden">
@@ -1548,6 +1782,15 @@ export default function FreeThrowSim({
       >
         {cameraMode === "perspective" ? "Top-down view" : "Perspective view"}
       </Button>
+      {/* Rebound-contest winner banner: top-center, brief, non-interactive —
+          doesn't compete with the top-right camera toggle or the aim preview
+          box (left/bottom-right depending on layout). Only ever set for a
+          rim-touching miss with a clear (non-tie, inbounds) winner. */}
+      {contestLabel && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 rounded-md border border-border bg-card/90 px-3 py-1.5 text-sm font-medium pointer-events-none">
+          {contestLabel}
+        </div>
+      )}
       {/* Aim preview: rim-from-above box, visible only while setting up a
           shot (hidden/shown imperatively — see the animate() loop and the
           shootTrigger effect above, keyed off st.flying).

@@ -9,6 +9,7 @@ import {
   createEmptyGrid,
   recordSample,
   mergeGrid,
+  mergePoints,
   emptyTotals,
   addTotals,
   computeStats,
@@ -176,6 +177,21 @@ describe("sweepGrid recording and merging", () => {
     expect(target.rimTouchCounts[idx]).toBe(1);
     expect(target.params[idx * 4]).toBe(40); // first-merged delta's params win
   });
+
+  it("mergePoints concatenates flat [x,z,...] deltas in order, without mutating either input", () => {
+    const a = new Float32Array([1, 2, 3, 4]); // (1,2), (3,4)
+    const b = new Float32Array([5, 6]); // (5,6)
+    const merged = mergePoints(a, b);
+    expect(Array.from(merged)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(Array.from(a)).toEqual([1, 2, 3, 4]);
+    expect(Array.from(b)).toEqual([5, 6]);
+  });
+
+  it("mergePoints with an empty delta returns the original target unchanged", () => {
+    const target = new Float32Array([7, 8]);
+    const merged = mergePoints(target, new Float32Array(0));
+    expect(merged).toBe(target); // no copy needed when there's nothing to add
+  });
 });
 
 describe("computeStats", () => {
@@ -197,6 +213,7 @@ describe("computeStats", () => {
       recordedCount: 7,
       nearSideCount: 5,
       farSideCount: 2,
+      contestOutOfBounds: 0,
     });
     const stats = computeStats(grid, totals);
 

@@ -284,6 +284,30 @@ describe("Phase 2 physics", () => {
     expect(backboardResult.catchPoint).not.toBeNull();
   });
 
+  it("firstRimContactTime is set only for shots that actually touch the rim, and precedes floorTime", () => {
+    const rimMissParams: ShotParams = { heightCm: 190, angleDeg: 50, aimDeg: 0, speed: 6.78, spinRps: 0 };
+    const rimTouch = simulate(rimMissParams, { recordTrajectory: false });
+    expect(rimTouch.rimContacts).toBeGreaterThan(0);
+    expect(rimTouch.firstRimContactTime).not.toBeNull();
+    expect(rimTouch.firstRimContactTime!).toBeGreaterThan(0);
+    if (rimTouch.floorTime !== null) {
+      expect(rimTouch.firstRimContactTime!).toBeLessThanOrEqual(rimTouch.floorTime);
+    }
+
+    const airball: ShotParams = { heightCm: 190, angleDeg: 45, aimDeg: 0, speed: 5.5, spinRps: 0 };
+    const airballResult = simulate(airball, { recordTrajectory: false });
+    expect(airballResult.rimContacts).toBe(0);
+    expect(airballResult.firstRimContactTime).toBeNull();
+
+    // Backboard-only miss: firstImpactTime is set (the backboard hit), but
+    // firstRimContactTime must stay null since the ball never touches the rim.
+    const backboardOnly: ShotParams = { heightCm: 190, angleDeg: 40, aimDeg: 0, speed: 8.3, spinRps: 0 };
+    const backboardResult = simulate(backboardOnly, { recordTrajectory: false });
+    expect(backboardResult.rimContacts).toBe(0);
+    expect(backboardResult.firstImpactTime).not.toBeNull();
+    expect(backboardResult.firstRimContactTime).toBeNull();
+  });
+
   it("a rim or backboard contact re-arms the catch point instead of keeping a pre-bounce guess", () => {
     // This fixture touches the rim multiple times, then the backboard, then
     // drops through the hoop — made, not a miss (see the made-shot detection
