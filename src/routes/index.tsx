@@ -373,12 +373,15 @@ function Index() {
             <div className="pt-2 border-t border-border mt-2 space-y-1">
               <Row k="Qualifying shots" v={contestSplit.qualifying.toLocaleString()} />
               <Row k="Landed out of bounds" v={sweepStats.contestOutOfBounds.toLocaleString()} />
+              <Row k="Catch-height fallback" v={sweepStats.contestCatchFallbackCount.toLocaleString()} />
             </div>
             <div className="text-muted-foreground pt-1">
-              Qualifying = touched the rim AND landed inbounds. Winner = whoever starts closest to the landing
-              point among ELIGIBLE players — an attacker is boxed out (ineligible) for any landing closer to the
-              rim than they are; defenders are always eligible. The shooter also starts an extra 0.3s later
-              (just released the shot).
+              Contested at standing-reach height (2.44m) in the air after the rim, not the floor landing.
+              Qualifying = touched the rim AND that point landed inbounds. Winner = whoever starts closest among
+              ELIGIBLE players — an attacker is boxed out (ineligible) for any point closer to the rim than they
+              are; defenders are always eligible. The shooter also starts an extra 0.3s later (just released the
+              shot). Catch-height fallback = shots that never came back down through 2.44m after the rim, so the
+              floor landing was used instead — should be ~0.
             </div>
           </div>
         )}

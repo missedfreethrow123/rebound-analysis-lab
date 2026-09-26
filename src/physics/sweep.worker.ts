@@ -142,35 +142,36 @@ function runSweep(msg: SweepWorkerStartMessage): void {
             totals.recordedCount++;
             if (point[1] < 0) totals.nearSideCount++;
             else totals.farSideCount++;
-            // Scatter-dot list: same point, further restricted to shots that
-            // (a) actually touched the rim — a clean swish or an airball that
-            // never reaches the rim contributes nothing to the rebound study
-            // — and (b), when recording the floor landing specifically,
-            // physically valid (result.landingValid is computed against
-            // floorPoint — see core.ts — so it only applies in that mode;
-            // catchPoint recording isn't a currently-reachable config, but
-            // this keeps the guard from misapplying to the wrong point if it
-            // ever is).
+            // Scatter-dot list: same GATING as before (touched rim + the
+            // floor landing was physically valid — result.landingValid is
+            // still computed against floorPoint, an unrelated physical-
+            // sanity check for backboard/under-hoop artifacts), but plotted
+            // at the rebound-contest point (standing-reach height, not the
+            // floor) instead of `point` — so a dot's position always
+            // matches the winner-map region it's sitting in. Guarded by a
+            // null check since contestPoint can (essentially never) be null
+            // — see core.ts's contestPointIsFallback.
             const touchedRim = result.rimContacts > 0;
             const isValidLanding = msg.record !== "floorPoint" || result.landingValid;
-            if (touchedRim && isValidLanding) {
-              scatterPoints.push(point[0], point[1]);
+            if (touchedRim && isValidLanding && result.contestPoint) {
+              scatterPoints.push(result.contestPoint[0], result.contestPoint[1]);
             }
           }
 
           // Rebound-contest qualifying points (src/rebound/contest.ts):
-          // always keyed off the actual FLOOR landing point, independent of
-          // `msg.record` (the scatter/grid recording above can be in
-          // catchPoint mode) — a rebound is contested where the ball hits
-          // the floor, per spec. Same rim-touch gate as the scatter dots; a
-          // made shot never gets here at all (this whole block is skipped
-          // when excludeMade+isMade) since a shot that goes in never
-          // produces a rebound to contest. Only the qualifying POINT is
-          // collected here, not a win/loss tally — see contestPoints' own
-          // comment above for why.
-          if (result.rimContacts > 0 && result.floorPoint) {
-            if (isInboundsLanding(result.floorPoint[0], result.floorPoint[1])) {
-              contestPoints.push(result.floorPoint[0], result.floorPoint[1]);
+          // keyed off the CONTEST point (standing-reach height after rim
+          // contact — see core.ts's contestPoint/REBOUND_CATCH_HEIGHT_M),
+          // independent of `msg.record` (the scatter/grid recording above
+          // can be in catchPoint mode). Same rim-touch gate as the scatter
+          // dots; a made shot never gets here at all (this whole block is
+          // skipped when excludeMade+isMade) since a shot that goes in
+          // never produces a rebound to contest. Only the qualifying POINT
+          // is collected here, not a win/loss tally — see contestPoints'
+          // own comment above for why.
+          if (result.rimContacts > 0 && result.contestPoint) {
+            if (result.contestPointIsFallback) totals.contestCatchFallbackCount++;
+            if (isInboundsLanding(result.contestPoint[0], result.contestPoint[1])) {
+              contestPoints.push(result.contestPoint[0], result.contestPoint[1]);
             } else {
               totals.contestOutOfBounds++;
             }

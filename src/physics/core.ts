@@ -48,6 +48,7 @@ import {
   NET_DROP_M,
   NET_DRAG_RATE,
   CATCH_HEIGHT_M,
+  REBOUND_CATCH_HEIGHT_M,
   COURT_WIDTH_M,
   HALF_COURT_LENGTH_M,
   WALL_MARGIN_X_M,
@@ -93,6 +94,23 @@ export interface ShotResult {
   catchPoint: [number, number] | null; // where it last descends through CATCH_HEIGHT_M before landing — defined for every miss (airball, backboard-only, or rim-touching), not just rim contacts; null only if the ball never reaches CATCH_HEIGHT_M while still airborne (e.g. an already-low trajectory)
   catchTime: number | null; // seconds from release
   catchSpeed: number | null; // m/s at that moment
+
+  // Rebound-contest point (src/rebound): the (x,z) where the ball FIRST
+  // descends through REBOUND_CATCH_HEIGHT_M (standing-reach height) after
+  // its first rim contact — a real rebounder contests the ball in the air,
+  // not on the floor. Unlike catchPoint above, this never re-arms on a
+  // later bounce; it's the first such crossing, full stop. null only in the
+  // (essentially never observed) case where no such crossing exists after
+  // rim contact — see contestPointIsFallback for why floorPoint is used
+  // instead when that happens.
+  contestPoint: [number, number] | null;
+  // True when contestPoint above had to fall back to floorPoint because the
+  // ball never re-crossed REBOUND_CATCH_HEIGHT_M descending after rim
+  // contact. Expected to be true for essentially 0% of rim-touching shots
+  // (the rim sits at 3.05m, well above the 2.44m threshold) — kept as an
+  // explicit flag (rather than silently reusing floorPoint) specifically so
+  // callers can tally how often it actually fires.
+  contestPointIsFallback: boolean;
 
   // Additional fields beyond the spec's minimum ShotResult contract, needed by
   // the existing single-shot stats panel (Phase 1 must not change what the
@@ -246,6 +264,21 @@ export function applyContactImpulse(
   return { velX: vx, velY: vy, velZ: vz, spinX: sx, spinY: sy, spinZ: sz };
 }
 
+// Pure derivation, not physics — kept as its own exported function (rather
+// than inlined at simulate()'s return) specifically so the fallback case can
+// be unit-tested directly with synthetic inputs. In real simulate() runs,
+// reboundContestPoint is essentially always non-null (the rim sits at 3.05m,
+// well above REBOUND_CATCH_HEIGHT_M's 2.44m, so gravity guarantees a
+// descending crossing before the ball reaches the floor) — see core.test.ts
+// for the full-sweep-range scan confirming 0 fallbacks in practice.
+export function resolveContestPoint(
+  reboundContestPoint: [number, number] | null,
+  floorPoint: [number, number] | null,
+): { contestPoint: [number, number] | null; contestPointIsFallback: boolean } {
+  if (reboundContestPoint !== null) return { contestPoint: reboundContestPoint, contestPointIsFallback: false };
+  return { contestPoint: floorPoint, contestPointIsFallback: floorPoint !== null };
+}
+
 export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
   const recordTrajectory = opts?.recordTrajectory ?? true;
 
@@ -320,6 +353,14 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
   let catchPoint: [number, number] | null = null;
   let catchTime: number | null = null;
   let catchSpeed: number | null = null;
+
+  // Rebound-contest point: the FIRST descent through REBOUND_CATCH_HEIGHT_M
+  // strictly after firstRimContactTime is set. Unlike catchPoint above, this
+  // never re-arms — once found, it's final for the rest of the flight (a
+  // real rebounder doesn't get a second chance to un-catch the ball). Stays
+  // null until (if ever) that first crossing happens; the fallback to
+  // floorPoint is applied once, after the loop ends — see the return block.
+  let reboundContestPoint: [number, number] | null = null;
 
   let flying = true;
   let t = 0;
@@ -571,6 +612,20 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
       }
     }
 
+    // Rebound-contest point: the FIRST descent through
+    // REBOUND_CATCH_HEIGHT_M strictly after the ball's first rim contact —
+    // see reboundContestPoint's declaration above for why this never
+    // re-arms (unlike catchPoint just above). Linearly interpolated between
+    // this step's start/end position for an accurate crossing, rather than
+    // just snapping to the post-step sample.
+    if (reboundContestPoint === null && firstRimContactTime !== null) {
+      const crossedReboundCatchHeight = prevY >= REBOUND_CATCH_HEIGHT_M && posY < REBOUND_CATCH_HEIGHT_M;
+      if (velY < 0 && crossedReboundCatchHeight) {
+        const frac = (REBOUND_CATCH_HEIGHT_M - prevY) / (posY - prevY);
+        reboundContestPoint = [prevX + (posX - prevX) * frac, prevZ + (posZ - prevZ) * frac];
+      }
+    }
+
     // Walls: containment box only, so a wild shot can't integrate forever —
     // NOT the real out-of-bounds lines (see the outcome classification below).
     // Also a genuine velocity discontinuity like the real collisions above, so
@@ -655,6 +710,8 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
     floorPoint[1] <= BACKBOARD_Z_M &&
     Math.hypot(floorPoint[0], floorPoint[1] - RIM_Z_M) > UNDER_HOOP_EXCLUSION_RADIUS_M;
 
+  const { contestPoint, contestPointIsFallback } = resolveContestPoint(reboundContestPoint, floorPoint);
+
   return {
     outcome,
     trajectory: recordTrajectory ? Float32Array.from(trajectorySamples) : new Float32Array(0),
@@ -664,6 +721,8 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
     catchPoint,
     catchTime,
     catchSpeed,
+    contestPoint,
+    contestPointIsFallback,
     maxHeight,
     backboardHit,
     floorBounces,

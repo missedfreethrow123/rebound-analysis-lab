@@ -101,6 +101,16 @@ export const DEFAULT_BACKSPIN_RPS = 0;
 // off the rim — roughly chest/reach height.
 export const CATCH_HEIGHT_M = 1.5;
 
+// Standing-reach height used ONLY by the rebound-contest model (src/rebound):
+// the point a real rebounder actually contests a miss at is well above chest
+// height — almost all drafted players have a standing reach at or above 8ft
+// (2.44m) with the arm raised, per standard combine/measurement data. Named
+// distinctly from CATCH_HEIGHT_M above (1.5m, chest height) rather than
+// reusing that name or its value — the two serve unrelated features (the
+// single-shot "Last shot" panel's catchPoint/catchTime/catchSpeed vs. the
+// contest's own contestPoint) and were never meant to be the same height.
+export const REBOUND_CATCH_HEIGHT_M = 2.44;
+
 // Safety bounds so a wild shot can't integrate forever / fly to infinity.
 // These are a containment box around the real court (not the real out-of-
 // bounds lines — see core.ts for the out_of_bounds outcome, which uses the

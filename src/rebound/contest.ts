@@ -1,8 +1,10 @@
 // Rebound-contest model: pure logic, no Three.js, no DOM — runs identically
-// for a single shot's landing point and inside the heat-map sweep (a Web
-// Worker). Reuses the SAME landing point the heat map already computes
-// (floorPoint from src/physics/core.ts's simulate()); this module never
-// re-derives flight/bounce physics, only decides who reaches that point first.
+// for a single shot's contest point and inside the heat-map sweep (a Web
+// Worker). Reuses the SAME point the heat map already computes (contestPoint
+// from src/physics/core.ts's simulate() — the ball's standing-reach catch
+// point in the air, not its floor landing; see REBOUND_CATCH_HEIGHT_M and
+// contestPoint's own comment there); this module never re-derives flight/
+// bounce physics, only decides who reaches that point first.
 //
 // MOVEMENT PHASE (idealized box-out): supersedes Phase 2's flat delta-t
 // handicap (BOXOUT_DELAY_S/startOffsetFor are gone — every attacker's start

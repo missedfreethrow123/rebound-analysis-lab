@@ -1302,12 +1302,21 @@ export default function FreeThrowSim({
           // Rebound contest (src/rebound/contest.ts) — only for shots that
           // actually touched the rim; a clean swish or airball never
           // produces a rebound to contest (see contest.ts's module comment).
-          // Reuses this exact landing point, computed nowhere else.
+          // Triggered at this same playback moment (ball reaching the
+          // floor) for timing convenience only — the point contested is a
+          // DIFFERENT, earlier point on the same trajectory; see below.
           if (st.contestPlayerMeshes) {
             for (const mesh of st.contestPlayerMeshes) mesh.scale.set(1, 1, 1);
           }
-          if (st.result.rimContacts > 0 && st.result.firstRimContactTime !== null && st.contestMarkerMesh) {
-            const contest: ContestResult = contestLanding(fx, fz);
+          // Contested at the ball's standing-reach catch point (in the air,
+          // after rim contact), NOT the floor landing used just above for
+          // onLanding — see core.ts's contestPoint/REBOUND_CATCH_HEIGHT_M.
+          // Players still meet on the floor at this point's (x,z); only the
+          // height it was picked at differs from a literal floor bounce.
+          const contestXZ = st.result.contestPoint;
+          if (st.result.rimContacts > 0 && st.result.firstRimContactTime !== null && st.contestMarkerMesh && contestXZ) {
+            const [cx, cz] = contestXZ;
+            const contest: ContestResult = contestLanding(cx, cz);
             if (contest.winnerTeam === "out") {
               // No rebound to contest — ball is out of bounds. Players stay
               // at their fixed spots, no marker, no animation.
@@ -1316,7 +1325,7 @@ export default function FreeThrowSim({
               clearContestPaths();
             } else {
               st.contestMarkerMesh.visible = true;
-              st.contestMarkerMesh.position.set(fx, CONTEST_MARKER_Y, fz);
+              st.contestMarkerMesh.position.set(cx, CONTEST_MARKER_Y, cz);
 
               const tRimStartMs = st.playStartTime + st.result.firstRimContactTime * 1000;
               const arrivalMsById: Record<string, number> = {};
@@ -1346,14 +1355,17 @@ export default function FreeThrowSim({
               for (const p of PLAYERS) {
                 const geo = new THREE.BufferGeometry().setFromPoints([
                   new THREE.Vector3(p.x, CONTEST_PATH_Y, p.z),
-                  new THREE.Vector3(fx, CONTEST_PATH_Y, fz),
+                  new THREE.Vector3(cx, CONTEST_PATH_Y, cz),
                 ]);
                 contestPathGroup.add(new THREE.Line(geo, pathMat));
               }
             }
           } else {
-            // Shot never touched the rim — "show no contest" (spec): no
-            // marker, no path lines, players stay put.
+            // Shot never touched the rim (the normal case here) — "show no
+            // contest" per spec: no marker, no path lines, players stay
+            // put. Also covers the essentially-never case where even the
+            // fallback contest point came back null (both catch and floor
+            // points missing).
             st.contestAnim = null;
             if (st.contestMarkerMesh) st.contestMarkerMesh.visible = false;
             clearContestPaths();

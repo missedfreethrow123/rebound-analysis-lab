@@ -142,6 +142,11 @@ export interface SweepTotals {
   // contestPoints array instead — see its own comment for why that split
   // isn't tallied here.
   contestOutOfBounds: number;
+  // How many rim-touching shots had to fall back to the floor landing
+  // because the ball never re-crossed REBOUND_CATCH_HEIGHT_M descending
+  // after rim contact (core.ts's contestPointIsFallback) — expected to be
+  // ~0; tracked so that expectation is actually verifiable, not assumed.
+  contestCatchFallbackCount: number;
 }
 
 export function emptyTotals(): SweepTotals {
@@ -153,6 +158,7 @@ export function emptyTotals(): SweepTotals {
     nearSideCount: 0,
     farSideCount: 0,
     contestOutOfBounds: 0,
+    contestCatchFallbackCount: 0,
   };
 }
 
@@ -165,6 +171,7 @@ export function addTotals(a: SweepTotals, b: SweepTotals): SweepTotals {
     nearSideCount: a.nearSideCount + b.nearSideCount,
     farSideCount: a.farSideCount + b.farSideCount,
     contestOutOfBounds: a.contestOutOfBounds + b.contestOutOfBounds,
+    contestCatchFallbackCount: a.contestCatchFallbackCount + b.contestCatchFallbackCount,
   };
 }
 
@@ -181,6 +188,7 @@ export interface SweepStats {
   // computes it directly from the worker's contestPoints array instead (see
   // sweep.worker.ts).
   contestOutOfBounds: number;
+  contestCatchFallbackCount: number;
 }
 
 export function computeStats(grid: SweepGrid, totals: SweepTotals): SweepStats {
@@ -238,5 +246,6 @@ export function computeStats(grid: SweepGrid, totals: SweepTotals): SweepStats {
     nearSideFraction: totals.recordedCount > 0 ? totals.nearSideCount / totals.recordedCount : null,
     farSideFraction: totals.recordedCount > 0 ? totals.farSideCount / totals.recordedCount : null,
     contestOutOfBounds: totals.contestOutOfBounds,
+    contestCatchFallbackCount: totals.contestCatchFallbackCount,
   };
 }

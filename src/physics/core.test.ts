@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyContactImpulse, releaseHeightM, simulate, type ShotParams } from "./core";
+import { applyContactImpulse, releaseHeightM, resolveContestPoint, simulate, type ShotParams } from "./core";
 import { BALL_INERTIA_KGM2, BALL_MASS_KG, FLOOR_RESTITUTION, FT_LINE_Z_M } from "./constants";
 
 const params: ShotParams = {
@@ -331,4 +331,61 @@ describe("Phase 2 physics", () => {
     // The catch point must come down before the ball reaches the floor.
     expect(result.catchTime!).toBeLessThan(result.floorTime!);
   });
+});
+
+describe("rebound-contest point (standing-reach height, src/rebound)", () => {
+  it("for a shot that clearly arcs above REBOUND_CATCH_HEIGHT_M after the rim, the contest point sits closer to the rim than the floor landing", () => {
+    // Known rim-touching fixture (see "simulate(p) called twice..." above):
+    // maxHeight ~3.75m, well above the rim's own 3.05m, so it clearly climbs
+    // back above 2.44m after the rim contact before finally descending.
+    const result = simulate({ heightCm: 190, angleDeg: 50, aimDeg: 0, speed: 6.78, spinRps: 0 }, { recordTrajectory: false });
+    expect(result.rimContacts).toBeGreaterThan(0);
+    expect(result.contestPointIsFallback).toBe(false);
+    expect(result.contestPoint).not.toBeNull();
+    expect(result.floorPoint).not.toBeNull();
+
+    const distToRim = (p: [number, number]) => Math.hypot(p[0], p[1]);
+    expect(distToRim(result.contestPoint!)).toBeLessThan(distToRim(result.floorPoint!));
+  });
+
+  it("resolveContestPoint uses the standing-reach crossing when one exists", () => {
+    const { contestPoint, contestPointIsFallback } = resolveContestPoint([1, -2], [3, -5]);
+    expect(contestPoint).toEqual([1, -2]);
+    expect(contestPointIsFallback).toBe(false);
+  });
+
+  it("resolveContestPoint falls back to the floor point when no standing-reach crossing was found", () => {
+    const { contestPoint, contestPointIsFallback } = resolveContestPoint(null, [3, -5]);
+    expect(contestPoint).toEqual([3, -5]);
+    expect(contestPointIsFallback).toBe(true);
+  });
+
+  it("resolveContestPoint has nothing to fall back to when the floor point is also missing", () => {
+    const { contestPoint, contestPointIsFallback } = resolveContestPoint(null, null);
+    expect(contestPoint).toBeNull();
+    expect(contestPointIsFallback).toBe(false); // nothing "fell back" — there was nothing to fall back to
+  });
+
+  it("across the full default sweep parameter range, the fallback essentially never fires", () => {
+    // Gravity guarantees a descending crossing of REBOUND_CATCH_HEIGHT_M
+    // (2.44m) before the ball reaches the floor (0m) for any shot whose
+    // first rim contact happens near the rim's own height (3.05m) — this is
+    // a coarser, faster confirmation of that claim than a full 212k-shot
+    // sweep, kept small enough to run as a normal test.
+    let rimTouch = 0;
+    let fallbacks = 0;
+    for (let angleDeg = 35; angleDeg <= 65; angleDeg += 2) {
+      for (let aimDeg = -12; aimDeg <= 12; aimDeg += 4) {
+        for (let speed = 5.5; speed <= 9; speed += 0.5) {
+          const r = simulate({ heightCm: 190, angleDeg, aimDeg, speed, spinRps: 0 }, { recordTrajectory: false });
+          if (r.rimContacts > 0) {
+            rimTouch++;
+            if (r.contestPointIsFallback) fallbacks++;
+          }
+        }
+      }
+    }
+    expect(rimTouch).toBeGreaterThan(20); // sanity: the coarse grid actually found rim-touching shots
+    expect(fallbacks).toBe(0);
+  }, 30000); // ~900 simulate() calls; this environment has shown severe, unexplained slowdowns elsewhere in this project's history, hence the generous timeout
 });

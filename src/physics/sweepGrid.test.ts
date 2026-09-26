@@ -214,6 +214,7 @@ describe("computeStats", () => {
       nearSideCount: 5,
       farSideCount: 2,
       contestOutOfBounds: 0,
+      contestCatchFallbackCount: 0,
     });
     const stats = computeStats(grid, totals);
 
