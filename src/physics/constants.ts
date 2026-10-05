@@ -97,6 +97,13 @@ export const NET_DRAG_RATE = 40;
 // own release spin was taken out.
 export const DEFAULT_BACKSPIN_RPS = 0;
 
+// The shooter's height is fixed, not slider-driven: the "Player height"
+// control in routes/index.tsx still displays this value but is disabled, so
+// the sweep's result never varies with it and can be computed once and
+// cached (see sweepCacheKey). One place to change if that ever revisits.
+export const SHOOTER_HEIGHT_M = 1.9;
+export const SHOOTER_HEIGHT_CM = SHOOTER_HEIGHT_M * 100; // ShotParams.heightCm/SweepConfig.heightCm expect centimetres
+
 // Height at which a rebounder is considered to "catch" the ball after it comes
 // off the rim — roughly chest/reach height.
 export const CATCH_HEIGHT_M = 1.5;

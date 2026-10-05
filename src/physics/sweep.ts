@@ -29,6 +29,9 @@ export interface SweepProgress {
   // (touched rim AND landed inbounds) — see sweep.worker.ts's contestPoints
   // comment for why the win/loss split isn't pre-computed here.
   contestPoints: Float32Array;
+  // One entry per contestPoints point — see sweep.worker.ts's own comment;
+  // the contest's FIBA lane-player start time needs this alongside each point.
+  contestFlightTimes: Float32Array;
   shotsCompleted: number;
   totalShotsPlanned: number;
   done: boolean;
@@ -52,6 +55,7 @@ export function startSweep(config: SweepConfig, onProgress: (progress: SweepProg
   let totals: SweepTotals = emptyTotals();
   let points: Float32Array = new Float32Array(0);
   let contestPoints: Float32Array = new Float32Array(0);
+  let contestFlightTimes: Float32Array = new Float32Array(0);
   let shotsCompleted = 0;
   let lastStatsComputeAt = 0;
   let cachedStats: SweepStats = computeStats(grid, totals);
@@ -66,7 +70,7 @@ export function startSweep(config: SweepConfig, onProgress: (progress: SweepProg
       cachedStats = computeStats(grid, totals);
       lastStatsComputeAt = now;
     }
-    onProgress({ grid, stats: cachedStats, points, contestPoints, shotsCompleted, totalShotsPlanned, done });
+    onProgress({ grid, stats: cachedStats, points, contestPoints, contestFlightTimes, shotsCompleted, totalShotsPlanned, done });
   };
 
   for (let i = 0; i < angleSlices.length; i++) {
@@ -81,6 +85,7 @@ export function startSweep(config: SweepConfig, onProgress: (progress: SweepProg
       totals = addTotals(totals, msg.totals);
       points = mergePoints(points, msg.points);
       contestPoints = mergePoints(contestPoints, msg.contestPoints);
+      contestFlightTimes = mergePoints(contestFlightTimes, msg.contestFlightTimes);
       shotsCompleted += msg.shotsThisFlush;
 
       if (msg.type === "done") {

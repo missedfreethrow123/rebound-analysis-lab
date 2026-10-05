@@ -58,6 +58,12 @@ export interface SweepWorkerOutboundMessage {
   // each point) happens on the main thread instead, keeping the pairing/
   // eligibility logic in one place rather than duplicated into the worker.
   contestPoints: Float32Array;
+  // One entry per contestPoints point (not per coordinate) — that shot's own
+  // result.firstRimContactTime, i.e. contest.ts's releaseToRimS. The FIBA
+  // lane-player start time (ball release, not t_rim) varies with how long
+  // each shot's flight to the rim took, so the main thread's contestLanding()
+  // call needs this alongside each point, not a single shared constant.
+  contestFlightTimes: Float32Array;
 }
 
 const PROGRESS_INTERVAL_MS = 200;
@@ -86,6 +92,7 @@ function runSweep(msg: SweepWorkerStartMessage): void {
   let shotsThisFlush = 0;
   let scatterPoints: number[] = [];
   let contestPoints: number[] = [];
+  let contestFlightTimes: number[] = [];
   let lastFlush = performance.now();
 
   const flush = (done: boolean) => {
@@ -94,6 +101,7 @@ function runSweep(msg: SweepWorkerStartMessage): void {
     const outShots = shotsThisFlush;
     const outPoints = Float32Array.from(scatterPoints);
     const outContestPoints = Float32Array.from(contestPoints);
+    const outContestFlightTimes = Float32Array.from(contestFlightTimes);
     const message: SweepWorkerOutboundMessage = {
       type: done ? "done" : "progress",
       workerId: msg.workerId,
@@ -102,10 +110,18 @@ function runSweep(msg: SweepWorkerStartMessage): void {
       shotsThisFlush: outShots,
       points: outPoints,
       contestPoints: outContestPoints,
+      contestFlightTimes: outContestFlightTimes,
     };
     self.postMessage(
       message,
-      [outGrid.counts.buffer, outGrid.rimTouchCounts.buffer, outGrid.params.buffer, outPoints.buffer, outContestPoints.buffer],
+      [
+        outGrid.counts.buffer,
+        outGrid.rimTouchCounts.buffer,
+        outGrid.params.buffer,
+        outPoints.buffer,
+        outContestPoints.buffer,
+        outContestFlightTimes.buffer,
+      ],
     );
     // The transferred buffers are now neutered on this side — allocate fresh
     // ones to keep accumulating. `everSet` is deliberately NOT reset: it's
@@ -117,6 +133,7 @@ function runSweep(msg: SweepWorkerStartMessage): void {
     shotsThisFlush = 0;
     scatterPoints = [];
     contestPoints = [];
+    contestFlightTimes = [];
   };
 
   outer: for (const angleDeg of msg.angleValues) {
@@ -172,6 +189,9 @@ function runSweep(msg: SweepWorkerStartMessage): void {
             if (result.contestPointIsFallback) totals.contestCatchFallbackCount++;
             if (isInboundsLanding(result.contestPoint[0], result.contestPoint[1])) {
               contestPoints.push(result.contestPoint[0], result.contestPoint[1]);
+              // rimContacts > 0 guarantees firstRimContactTime is set — see
+              // its own comment in core.ts.
+              contestFlightTimes.push(result.firstRimContactTime!);
             } else {
               totals.contestOutOfBounds++;
             }

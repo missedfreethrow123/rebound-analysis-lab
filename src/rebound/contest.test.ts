@@ -40,7 +40,7 @@ describe("PAIRING (global minimum-total-distance matching)", () => {
 });
 
 describe("startDelayFor", () => {
-  it("is REACTION_S for everyone except the shooter", () => {
+  it("defaults releaseToRimS to 0, reproducing the pre-FIBA-timing REACTION_S for everyone but the shooter", () => {
     expect(startDelayFor("D_L")).toBeCloseTo(REACTION_S, 9);
     expect(startDelayFor("O_L")).toBeCloseTo(REACTION_S, 9);
     expect(startDelayFor("D_3")).toBeCloseTo(REACTION_S, 9);
@@ -49,6 +49,24 @@ describe("startDelayFor", () => {
   it("is REACTION_S + SHOOTER_RECOVERY_S (0.6s) for the shooter", () => {
     expect(startDelayFor("SHOOTER")).toBeCloseTo(REACTION_S + SHOOTER_RECOVERY_S, 9);
     expect(startDelayFor("SHOOTER")).toBeCloseTo(0.6, 9);
+  });
+
+  it("FIBA 44.2.4: a lane player's start time is t_release + REACTION_S, not t_rim + REACTION_S", () => {
+    // startDelayFor's return value is "seconds from t_rim" — so a lane
+    // player's start, measured from RELEASE instead, is releaseToRimS (the
+    // flight time from release to t_rim) plus this delay. That must equal
+    // REACTION_S alone, regardless of how long the flight to the rim took.
+    for (const releaseToRimS of [0.2, 0.75, 1.3, 2.0]) {
+      const delayFromRim = startDelayFor("D_L", releaseToRimS);
+      expect(delayFromRim).toBeCloseTo(REACTION_S - releaseToRimS, 9);
+      expect(releaseToRimS + delayFromRim).toBeCloseTo(REACTION_S, 9); // start time from release
+    }
+  });
+
+  it("FIBA 44.2.3: the shooter's start time is unchanged (still t_rim + 0.6s) regardless of flight time", () => {
+    for (const releaseToRimS of [0.2, 0.75, 1.3, 2.0]) {
+      expect(startDelayFor("SHOOTER", releaseToRimS)).toBeCloseTo(REACTION_S + SHOOTER_RECOVERY_S, 9);
+    }
   });
 });
 
@@ -148,5 +166,21 @@ describe("contestLanding — idealized box-out with pairing (movement phase)", (
     const result = contestLanding(landingX, landingZ);
     const dLArrival = result.arrivals.find((a) => a.id === "D_L")!;
     expect(dLArrival.arrival).toBeCloseTo(startDelayFor("D_L") + dist / PLAYER_SPEED_MPS, 9);
+  });
+
+  it("FIBA timing: passing releaseToRimS shifts a lane player's arrival earlier by exactly that amount, but leaves the shooter's arrival untouched", () => {
+    const landingX = dL.x;
+    const landingZ = dL.z - 3;
+    const releaseToRimS = 1.1; // a realistic flight time to the rim
+    const withoutTiming = contestLanding(landingX, landingZ);
+    const withTiming = contestLanding(landingX, landingZ, releaseToRimS);
+
+    const dLWithout = withoutTiming.arrivals.find((a) => a.id === "D_L")!.arrival;
+    const dLWith = withTiming.arrivals.find((a) => a.id === "D_L")!.arrival;
+    expect(dLWithout - dLWith).toBeCloseTo(releaseToRimS, 9); // earlier start -> earlier arrival, same shift
+
+    const shooterWithout = withoutTiming.arrivals.find((a) => a.id === "SHOOTER")!.arrival;
+    const shooterWith = withTiming.arrivals.find((a) => a.id === "SHOOTER")!.arrival;
+    expect(shooterWith).toBeCloseTo(shooterWithout, 9); // unaffected — 44.2.3
   });
 });

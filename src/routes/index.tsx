@@ -11,6 +11,7 @@ import type { SimControls } from "@/components/FreeThrowSim";
 import { startSweep, type SweepHandle } from "@/physics/sweep";
 import { defaultSweepConfig, sweepCacheKey, totalShotCount, type SweepConfig } from "@/physics/sweepConfig";
 import type { SweepGrid, SweepStats } from "@/physics/sweepGrid";
+import { SHOOTER_HEIGHT_CM } from "@/physics/constants";
 import { OFFENSE_COLOR, DEFENSE_COLOR } from "@/rebound/players";
 import { contestLanding } from "@/rebound/contest";
 
@@ -39,7 +40,14 @@ type Stats = {
 
 type SweepPhase = "idle" | "running" | "done";
 
-type CachedSweep = { grid: SweepGrid; stats: SweepStats; points: Float32Array; contestPoints: Float32Array; config: SweepConfig };
+type CachedSweep = {
+  grid: SweepGrid;
+  stats: SweepStats;
+  points: Float32Array;
+  contestPoints: Float32Array;
+  contestFlightTimes: Float32Array;
+  config: SweepConfig;
+};
 
 function Index() {
   const hydrated = useHydrated();
@@ -47,7 +55,6 @@ function Index() {
   // Mobile-only bottom sheet open/closed state (desktop sidebar ignores this
   // — it's always shown, side-by-side, via lg: classes below).
   const [sheetOpen, setSheetOpen] = useState(true);
-  const [playerHeightCm, setPlayerHeightCm] = useState(190);
   const [angleDeg, setAngleDeg] = useState(52);
   const [aimDeg, setAimDeg] = useState(0);
   const [power, setPower] = useState(7.5);
@@ -72,15 +79,16 @@ function Index() {
   // scatter-dot heat map's stricter landingValid). Kept separate from
   // sweepPoints since the two win-eligible populations differ.
   const [contestPoints, setContestPoints] = useState<Float32Array | null>(null);
+  // One entry per contestPoints point — see sweep.worker.ts's own comment;
+  // the FIBA lane-player start time (ball release, not t_rim) varies with
+  // each shot's own flight time to the rim, so contestSplit below needs this.
+  const [contestFlightTimes, setContestFlightTimes] = useState<Float32Array | null>(null);
   const [sweepConfig, setSweepConfig] = useState<SweepConfig | null>(null);
   const [sweepProgress, setSweepProgress] = useState<{ shotsCompleted: number; totalShotsPlanned: number } | null>(null);
   const sweepHandleRef = useRef<SweepHandle | null>(null);
   const sweepCacheRef = useRef(new Map<string, CachedSweep>());
 
-  const controls = useMemo<SimControls>(
-    () => ({ playerHeightCm, angleDeg, aimDeg, power }),
-    [playerHeightCm, angleDeg, aimDeg, power],
-  );
+  const controls = useMemo<SimControls>(() => ({ angleDeg, aimDeg, power }), [angleDeg, aimDeg, power]);
 
   // Memoized so FreeThrowSim's [heatmap] effect (which now rebuilds a whole
   // InstancedMesh, not just refills a texture) only re-runs when the point
@@ -96,12 +104,15 @@ function Index() {
   // — no slider anymore, so this only needs to change when contestPoints
   // itself changes (a new sweep, or toggling the heat map off).
   const contestSplit = useMemo(() => {
-    if (!contestPoints || contestPoints.length === 0) return null;
+    if (!contestPoints || contestPoints.length === 0 || !contestFlightTimes) return null;
     let offenseWins = 0;
     let defenseWins = 0;
     const qualifying = contestPoints.length / 2;
     for (let i = 0; i < qualifying; i++) {
-      const result = contestLanding(contestPoints[i * 2], contestPoints[i * 2 + 1]);
+      // FIBA 44.2.4: lane players move from ball release, not t_rim — see
+      // contest.ts's startDelayFor. contestFlightTimes[i] is that shot's own
+      // release-to-rim flight time (releaseToRimS), paired 1:1 with this point.
+      const result = contestLanding(contestPoints[i * 2], contestPoints[i * 2 + 1], contestFlightTimes[i]);
       if (result.winnerTeam === "offense") offenseWins++;
       else if (result.winnerTeam === "defense") defenseWins++;
       else if (result.winnerTeam === "tie") {
@@ -112,21 +123,23 @@ function Index() {
       // isInboundsLanding in the worker.
     }
     return { qualifying, offensePercent: (offenseWins / qualifying) * 100, defensePercent: (defenseWins / qualifying) * 100 };
-  }, [contestPoints]);
+  }, [contestPoints, contestFlightTimes]);
 
   const startHeatMap = () => {
-    const config = defaultSweepConfig(playerHeightCm, isMobile);
+    const config = defaultSweepConfig(SHOOTER_HEIGHT_CM, isMobile);
     const key = sweepCacheKey(config);
 
-    // Clicking again for the SAME config while a result is already showing is
-    // a toggle-off: the sweep itself and its cache (sweepCacheRef) are
-    // untouched, so clicking once more afterwards reloads the same points
-    // instantly rather than recomputing. A height change since the sweep was
-    // shown must NOT toggle off — it must recompute for the new height (the
-    // sweepConfig comparison below is what tells the two cases apart).
+    // Shooter height is fixed (SHOOTER_HEIGHT_CM), so the config here only
+    // ever varies with isMobile's coarse-grid flag — meaning after the first
+    // computation for a given device class, every later click just toggles
+    // cached state on/off (sweepCacheRef below) rather than resweeping.
+    // Clicking again for the SAME config while a result is already showing
+    // is a toggle-off: the sweep itself and its cache are left untouched, so
+    // clicking once more afterwards reloads the same points instantly.
     if (sweepPhase === "done" && sweepPoints && sweepConfig && sweepCacheKey(sweepConfig) === key) {
       setSweepPoints(null);
       setContestPoints(null);
+      setContestFlightTimes(null);
       setSweepGrid(null);
       setSweepStats(null);
       setSweepConfig(null);
@@ -139,6 +152,7 @@ function Index() {
       setSweepStats(cached.stats);
       setSweepPoints(cached.points);
       setContestPoints(cached.contestPoints);
+      setContestFlightTimes(cached.contestFlightTimes);
       setSweepConfig(cached.config);
       setSweepProgress(null);
       setSweepPhase("done");
@@ -153,6 +167,7 @@ function Index() {
       setSweepStats(progress.stats);
       setSweepPoints(progress.points);
       setContestPoints(progress.contestPoints);
+      setContestFlightTimes(progress.contestFlightTimes);
       setSweepProgress({ shotsCompleted: progress.shotsCompleted, totalShotsPlanned: progress.totalShotsPlanned });
       if (progress.done) {
         sweepCacheRef.current.set(key, {
@@ -160,6 +175,7 @@ function Index() {
           stats: progress.stats,
           points: progress.points,
           contestPoints: progress.contestPoints,
+          contestFlightTimes: progress.contestFlightTimes,
           config,
         });
         sweepHandleRef.current = null;
@@ -242,8 +258,11 @@ function Index() {
         </div>
 
         <div className="space-y-1 md:space-y-2">
-          <Label>Player height: {playerHeightCm} cm</Label>
-          <Slider min={140} max={230} step={1} value={[playerHeightCm]} onValueChange={(v) => setPlayerHeightCm(v[0])} />
+          <Label>Player height: {SHOOTER_HEIGHT_CM} cm</Label>
+          {/* Locked: the shooter's height is now a fixed constant (see
+              SHOOTER_HEIGHT_CM) so the heat map sweep never depends on it and
+              can be computed once and cached. Still shown, just disabled. */}
+          <Slider min={140} max={230} step={1} value={[SHOOTER_HEIGHT_CM]} disabled />
         </div>
         <div className="space-y-1 md:space-y-2">
           <Label>Release angle: {angleDeg}°</Label>
@@ -379,9 +398,11 @@ function Index() {
               Contested at standing-reach height (2.44m) in the air after the rim, not the floor landing.
               Qualifying = touched the rim AND that point landed inbounds. Winner = whoever starts closest among
               ELIGIBLE players — an attacker is boxed out (ineligible) for any point closer to the rim than they
-              are; defenders are always eligible. The shooter also starts an extra 0.3s later (just released the
-              shot). Catch-height fallback = shots that never came back down through 2.44m after the rim, so the
-              floor landing was used instead — should be ~0.
+              are; defenders are always eligible. Per FIBA, lane players (defenders and non-shooter attackers) may
+              move from the moment the ball leaves the shooter's hand, plus a 0.3s reaction; the shooter can't move
+              until the ball touches the rim, plus the same 0.3s reaction and an extra 0.3s recovery. Catch-height
+              fallback = shots that never came back down through 2.44m after the rim, so the floor landing was used
+              instead — should be ~0.
             </div>
           </div>
         )}

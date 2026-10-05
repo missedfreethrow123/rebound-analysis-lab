@@ -28,12 +28,28 @@ export const PLAYER_SPEED_MPS = 3.5;
 export const REACTION_S = 0.3; // everyone
 export const SHOOTER_RECOVERY_S = 0.3; // extra, shooter only — just released the shot
 
-// Per-player start delay from t_rim (the ball's first rim contact). Only the
-// shooter is special-cased — every other player (both teams) uses REACTION_S
-// alone. Keyed by id rather than team since "the shooter" is a specific
-// attacker, not a team-wide rule.
-export function startDelayFor(playerId: string): number {
-  return playerId === "SHOOTER" ? REACTION_S + SHOOTER_RECOVERY_S : REACTION_S;
+// START TIME (FIBA 2026):
+// - 44.2.4: lane players (the 3 defenders and the 2 non-shooter attackers in
+//   the rebound places) may leave their place once the ball leaves the
+//   shooter's hand — ball release, t=0 in core.ts's own simulation clock.
+// - 44.2.3: the free-throw shooter may not move until the ball has touched
+//   the rim (t_rim).
+//
+// Every delay here is still expressed "from t_rim" (ContestArrival.arrival's
+// own convention), so a lane player's delay is REACTION_S *earlier* than
+// before by however long the ball took to reach the rim — releaseToRimS,
+// which is exactly core.ts's firstRimContactTime (seconds from release to
+// first rim contact; release is always t=0 there, so that IS t_rim measured
+// from release). The shooter's delay is unchanged: it was already measured
+// from t_rim, not release, so releaseToRimS doesn't enter it.
+//
+// releaseToRimS defaults to 0 for callers with no specific simulated shot to
+// read it from (src/rebound/winnerField.ts's synthetic, position-only grid)
+// — that reproduces this function's pre-FIBA-timing behavior exactly. A real
+// contest (single shot, or the sweep's per-shot split) must pass the actual
+// value from that shot's own ShotResult.firstRimContactTime.
+export function startDelayFor(playerId: string, releaseToRimS = 0): number {
+  return playerId === "SHOOTER" ? REACTION_S + SHOOTER_RECOVERY_S : REACTION_S - releaseToRimS;
 }
 
 // Rim's floor projection — (0,0) in this court frame (core.ts: RIM_Z_M = 0,
@@ -144,7 +160,10 @@ export function isInboundsLanding(x: number, z: number): boolean {
 // among players actually eligible for it (rule 3). Closed-form, not a
 // frame-by-frame simulation — every player moves at the same PLAYER_SPEED_MPS,
 // so arrival time is exact from start delay + straight-line distance.
-export function contestLanding(x: number, z: number): ContestResult {
+// releaseToRimS: see startDelayFor's own comment — pass the real shot's
+// firstRimContactTime when one exists; defaults to 0 (pre-FIBA-timing
+// behavior) for callers with no specific shot, e.g. winnerField.ts.
+export function contestLanding(x: number, z: number, releaseToRimS = 0): ContestResult {
   const P = { x, z };
   if (!isInboundsLanding(x, z)) {
     return { P, winnerTeam: "out", winnerId: null, arrivals: [] };
@@ -153,7 +172,7 @@ export function contestLanding(x: number, z: number): ContestResult {
   const arrivals: ContestArrival[] = PLAYERS.map((p) => {
     const dist = Math.hypot(p.x - x, p.z - z);
     const eligible = p.team === "defense" || isAttackerEligible(p, P);
-    return { id: p.id, team: p.team, arrival: startDelayFor(p.id) + dist / PLAYER_SPEED_MPS, eligible };
+    return { id: p.id, team: p.team, arrival: startDelayFor(p.id, releaseToRimS) + dist / PLAYER_SPEED_MPS, eligible };
   });
 
   // Defenders are always eligible (3 of them), so this is never empty.

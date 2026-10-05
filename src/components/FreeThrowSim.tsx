@@ -16,6 +16,7 @@ import {
   BACKBOARD_H_M,
   BACKBOARD_Y_ABOVE_RIM_M,
   BALL_RADIUS_M,
+  SHOOTER_HEIGHT_CM,
 } from "@/physics/constants";
 import { PLAYERS, OFFENSE_COLOR, DEFENSE_COLOR } from "@/rebound/players";
 import { contestLanding, startDelayFor, type ContestResult } from "@/rebound/contest";
@@ -41,7 +42,6 @@ type Stats = {
 };
 
 export type SimControls = {
-  playerHeightCm: number;
   angleDeg: number;
   aimDeg: number;
   power: number;
@@ -345,13 +345,13 @@ const PREVIEW_TRAJ_TUBE_RADIUS_M = 0.012; // preview-only aim line's radius
 // each other (or from the Phase 3 sweep engine, which will call the same
 // function). Nothing in this file steps velocity/position itself anymore.
 
-function releasePosition(c: SimControls) {
-  return new THREE.Vector3(0, releaseHeightM(c.playerHeightCm), FT_LINE_Z);
+function releasePosition() {
+  return new THREE.Vector3(0, releaseHeightM(SHOOTER_HEIGHT_CM), FT_LINE_Z);
 }
 
 function shotParamsFromControls(c: SimControls): ShotParams {
   return {
-    heightCm: c.playerHeightCm,
+    heightCm: SHOOTER_HEIGHT_CM,
     angleDeg: c.angleDeg,
     aimDeg: c.aimDeg,
     speed: c.power,
@@ -1250,7 +1250,7 @@ export default function FreeThrowSim({
     stateRef.current.contestClearPaths = clearContestPaths;
 
     // Position ball at release
-    const rp = releasePosition(controls);
+    const rp = releasePosition();
     ball.position.copy(rp);
 
     let raf = 0;
@@ -1316,7 +1316,11 @@ export default function FreeThrowSim({
           const contestXZ = st.result.contestPoint;
           if (st.result.rimContacts > 0 && st.result.firstRimContactTime !== null && st.contestMarkerMesh && contestXZ) {
             const [cx, cz] = contestXZ;
-            const contest: ContestResult = contestLanding(cx, cz);
+            // FIBA 44.2.4: lane players may move from ball release, not
+            // t_rim — see contest.ts's startDelayFor. This shot's own
+            // release-to-rim flight time is the real releaseToRimS value.
+            const releaseToRimS = st.result.firstRimContactTime;
+            const contest: ContestResult = contestLanding(cx, cz, releaseToRimS);
             if (contest.winnerTeam === "out") {
               // No rebound to contest — ball is out of bounds. Players stay
               // at their fixed spots, no marker, no animation.
@@ -1338,7 +1342,7 @@ export default function FreeThrowSim({
               for (const a of contest.arrivals) {
                 if (!a.eligible) continue;
                 arrivalMsById[a.id] = tRimStartMs + a.arrival * 1000;
-                moveStartMsById[a.id] = tRimStartMs + startDelayFor(a.id) * 1000;
+                moveStartMsById[a.id] = tRimStartMs + startDelayFor(a.id, releaseToRimS) * 1000;
               }
 
               st.contestAnim = {
@@ -1393,7 +1397,7 @@ export default function FreeThrowSim({
           // settle time is reflected in the reset position (see controlsRef above)
           setTimeout(() => {
             if (!st.ball) return;
-            const rp2 = releasePosition(controlsRef.current);
+            const rp2 = releasePosition();
             st.ball.position.copy(rp2);
           }, 800);
         }
@@ -1540,7 +1544,7 @@ export default function FreeThrowSim({
     const st = stateRef.current;
     if (!st.trajLine || !st.ball) return;
     if (!st.flying) {
-      const rp = releasePosition(controls);
+      const rp = releasePosition();
       st.ball.position.copy(rp);
     }
     const result = simulate(shotParamsFromControls(controls));
@@ -1595,7 +1599,7 @@ export default function FreeThrowSim({
     if (shootTrigger === 0) return;
     const st = stateRef.current;
     if (!st.ball || st.flying || !st.canShoot) return;
-    const rp = releasePosition(controls);
+    const rp = releasePosition();
     st.ball.position.copy(rp);
     st.result = simulate(shotParamsFromControls(controls));
     st.flying = true;
