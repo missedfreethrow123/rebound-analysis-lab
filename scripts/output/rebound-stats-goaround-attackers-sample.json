@@ -1,0 +1,79 @@
+{
+  "label": "goaround-attackers-sample",
+  "generatedAt": "2026-10-12T03:31:47.085Z",
+  "elapsedSeconds": 232.158,
+  "config": {
+    "heightCm": 190,
+    "spinRps": 0,
+    "angle": {
+      "min": 35,
+      "max": 65,
+      "step": 0.5
+    },
+    "aim": {
+      "min": -12,
+      "max": 12,
+      "step": 0.5
+    },
+    "speed": {
+      "min": 5.5,
+      "max": 9,
+      "step": 0.05
+    },
+    "excludeMade": true,
+    "totalShots": 212219,
+    "everyN": 10,
+    "sampledShots": 21222
+  },
+  "qualifyingFilter": "!(excludeMade && outcome===\"made\") && rimContacts>0 && contestPoint!==null && isInboundsLanding(contestPoint)",
+  "qualifyingShots": 1642,
+  "new": {
+    "count": 1642,
+    "offense": 580,
+    "defense": 712,
+    "tie": 0,
+    "out": 350,
+    "none": 0,
+    "winsById": {
+      "D_L": 220,
+      "D_R": 224,
+      "O_L": 238,
+      "O_R": 183,
+      "SHOOTER": 159,
+      "D_3": 268
+    }
+  },
+  "old": {
+    "count": 1642,
+    "offense": 29,
+    "defense": 1613,
+    "tie": 0,
+    "out": 0,
+    "none": 0,
+    "winsById": {
+      "D_L": 619,
+      "D_R": 688,
+      "O_L": 6,
+      "O_R": 23,
+      "SHOOTER": 0,
+      "D_3": 306
+    }
+  },
+  "newOnly": {
+    "meanCatchTimeS": 1.8809636222910207,
+    "catchTimeSampleCount": 1292,
+    "totalOverlapViolations": 0,
+    "blockedShotsById": {
+      "D_L": 1087,
+      "D_R": 1077,
+      "O_L": 394,
+      "O_R": 370,
+      "SHOOTER": 61,
+      "D_3": 1003
+    },
+    "blockedThreshold": {
+      "speedFraction": 0.5,
+      "minTotalS": 0.1
+    }
+  }
+}

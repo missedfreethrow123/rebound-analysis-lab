@@ -1,0 +1,77 @@
+{
+  "label": "before",
+  "generatedAt": "2026-10-08T18:14:48.214Z",
+  "elapsedSeconds": 19870.502,
+  "config": {
+    "heightCm": 190,
+    "spinRps": 0,
+    "angle": {
+      "min": 35,
+      "max": 65,
+      "step": 0.5
+    },
+    "aim": {
+      "min": -12,
+      "max": 12,
+      "step": 0.5
+    },
+    "speed": {
+      "min": 5.5,
+      "max": 9,
+      "step": 0.05
+    },
+    "excludeMade": true,
+    "totalShots": 212219
+  },
+  "qualifyingFilter": "!(excludeMade && outcome===\"made\") && rimContacts>0 && contestPoint!==null && isInboundsLanding(contestPoint)",
+  "qualifyingShots": 16422,
+  "new": {
+    "count": 16422,
+    "offense": 1261,
+    "defense": 4781,
+    "tie": 0,
+    "out": 8894,
+    "none": 1486,
+    "winsById": {
+      "D_L": 724,
+      "D_R": 725,
+      "O_L": 594,
+      "O_R": 597,
+      "SHOOTER": 70,
+      "D_3": 3332
+    }
+  },
+  "old": {
+    "count": 16422,
+    "offense": 244,
+    "defense": 16178,
+    "tie": 0,
+    "out": 0,
+    "none": 0,
+    "winsById": {
+      "D_L": 6064,
+      "D_R": 7287,
+      "O_L": 34,
+      "O_R": 210,
+      "SHOOTER": 0,
+      "D_3": 2827
+    }
+  },
+  "newOnly": {
+    "meanCatchTimeS": 2.068857166501159,
+    "catchTimeSampleCount": 6042,
+    "totalOverlapViolations": 0,
+    "blockedShotsById": {
+      "D_L": 5937,
+      "D_R": 5937,
+      "O_L": 5900,
+      "O_R": 5900,
+      "SHOOTER": 2568,
+      "D_3": 3393
+    },
+    "blockedThreshold": {
+      "speedFraction": 0.5,
+      "minTotalS": 0.1
+    }
+  }
+}

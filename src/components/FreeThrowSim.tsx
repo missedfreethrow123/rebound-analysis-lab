@@ -18,8 +18,8 @@ import {
   BALL_RADIUS_M,
   SHOOTER_HEIGHT_CM,
 } from "@/physics/constants";
-import { PLAYERS, OFFENSE_COLOR, DEFENSE_COLOR } from "@/rebound/players";
-import { contestLanding, startDelayFor, type ContestResult } from "@/rebound/contest";
+import { PLAYERS, PLAYER_RADIUS_M, OFFENSE_COLOR, DEFENSE_COLOR } from "@/rebound/players";
+import { simulateRebound, type MovementResult } from "@/rebound/movement";
 import {
   computeWinnerField,
   WINNER_FIELD_OFFENSE,
@@ -146,16 +146,15 @@ const WINNER_FIELD_Y = 0.01;
 const WINNER_FIELD_OPACITY = 0.45;
 const WINNER_FIELD_NEUTRAL_COLOR = 0x888888; // tie/out-of-bounds cells — practically never occurs in this region
 
-// Rebound-contest one-shot visualisation: the 5 fixed player discs (always
+// Rebound-contest one-shot visualisation: the 6 fixed player discs (always
 // visible, at their fixed FIBA lane-space start positions — see
-// src/rebound/players.ts) plus the ephemeral orange landing marker and faint
-// path lines drawn only while a contest is animating.
-const CONTEST_PLAYER_RADIUS_M = M(0.22);
+// src/rebound/players.ts), driven frame-by-frame by src/rebound/movement.ts's
+// simulateRebound() — no landing-point marker or path lines anymore (those
+// showed foreknowledge of where the ball would end up, which no real player
+// has; see movement.ts's own header for why this replaced contestLanding()
+// here specifically).
+const CONTEST_PLAYER_RADIUS_M = M(PLAYER_RADIUS_M); // matches the physics radius so the discs' touching distance looks right
 const CONTEST_PLAYER_Y = 0.03; // above the scatter dots/winner field, never obscured by either
-const CONTEST_MARKER_RADIUS_M = M(0.1);
-const CONTEST_MARKER_COLOR = 0xffa500;
-const CONTEST_MARKER_Y = 0.032;
-const CONTEST_PATH_Y = 0.028;
 const CONTEST_WINNER_HIGHLIGHT_SCALE = 1.6;
 const CONTEST_LABEL_DURATION_MS = 2200;
 
@@ -517,32 +516,27 @@ export default function FreeThrowSim({
     scatterMesh?: THREE.InstancedMesh;
     keyMaterial?: THREE.MeshStandardMaterial;
     winnerFieldMesh?: THREE.InstancedMesh;
-    // Rebound-contest one-shot visualisation (src/rebound/contest.ts drives
-    // the math; everything here is just the Three.js side of playing it
-    // back). Player meshes/marker/path lines are created once at scene-init
-    // and reused for every shot — only contestAnim changes per landing.
+    // Rebound-contest one-shot visualisation (src/rebound/movement.ts drives
+    // the math — frame-by-frame, no foreknowledge of the ball's eventual
+    // point; see its own header. Everything here is just the Three.js side
+    // of playing it back). Player meshes are created once at scene-init and
+    // reused for every shot — only `movement` changes per landing.
     contestPlayerMeshes?: THREE.Mesh[]; // indexed the same as PLAYERS
-    contestMarkerMesh?: THREE.Mesh;
-    contestPathGroup?: THREE.Group;
-    contestClearPaths?: () => void;
-    contestAnim?: {
-      tRimStartMs: number; // performance.now() timestamp of t_rim (ball's first rim contact) for THIS flight
-      // Per player id, tRimStartMs + startDelayFor(id)*1000 — the shooter
-      // starts later than everyone else (their own recovery delay), so this
-      // can't be a single shared value. An INELIGIBLE attacker (idealized
-      // box-out) has no entry at all here — see the kickoff logic below.
-      moveStartMsById: Record<string, number>;
-      P: { x: number; z: number };
-      arrivalMsById: Record<string, number>; // per player id, tRimStartMs + arrival*1000
-      winnerId: string | null; // null for "out"/"tie" — no single highlight then
-      highlighted: boolean; // whether the winner highlight has already fired for this contest
-    } | null;
+    // Computed once per shot, right when Shoot fires (same moment as
+    // result), and played back every animate() frame against the SAME
+    // elapsed-since-release clock the ball's own trajectory uses — see
+    // movement.frames and movement.catchTime.
+    movement?: MovementResult | null;
+    movementHighlighted: boolean; // whether the winner highlight/label has already fired for this shot's movement
+    movementCursor: number; // index (in frames, not floats) into movement.frames — advances monotonically during playback, like trajCursor
   }>({
     flying: false,
     canShoot: true,
     hoopCamPos: CAM_HOOP_POS.clone(),
     cameraMode: "perspective",
     playStartTime: 0,
+    movementHighlighted: false,
+    movementCursor: 0,
     trajCursor: 0,
     landingFired: false,
   });
@@ -1049,12 +1043,13 @@ export default function FreeThrowSim({
     trajLine.layers.set(MAIN_VIEW_TRAJ_LAYER);
     scene.add(trajLine);
 
-    // Rebound-contest players (src/rebound/players.ts): 5 flat team-coloured
+    // Rebound-contest players (src/rebound/players.ts): 6 flat team-coloured
     // discs at their fixed FIBA lane-space start positions, always visible —
     // a permanent court fixture, not something that pops in/out per shot.
-    // Only their POSITION and one mesh's highlight (scale) change per shot,
-    // driven entirely from the animate() loop below off the already-computed
-    // ShotResult — no new props, no second physics pass.
+    // Their POSITION every frame and one mesh's highlight (scale) on a win
+    // are driven entirely from the animate() loop below off
+    // src/rebound/movement.ts's simulateRebound() — no new props, no second
+    // physics pass.
     const contestPlayerMeshes: THREE.Mesh[] = PLAYERS.map((p) => {
       const geo = new THREE.CircleGeometry(CONTEST_PLAYER_RADIUS_M, 24);
       const mat = new THREE.MeshBasicMaterial({ color: p.team === "offense" ? OFFENSE_COLOR : DEFENSE_COLOR });
@@ -1064,29 +1059,6 @@ export default function FreeThrowSim({
       scene.add(mesh);
       return mesh;
     });
-
-    // Landing-point marker P: a small neutral orange dot, hidden until the
-    // first rim-touching miss actually lands.
-    const contestMarkerMesh = new THREE.Mesh(
-      new THREE.CircleGeometry(CONTEST_MARKER_RADIUS_M, 16),
-      new THREE.MeshBasicMaterial({ color: CONTEST_MARKER_COLOR }),
-    );
-    contestMarkerMesh.rotation.x = -Math.PI / 2;
-    contestMarkerMesh.visible = false;
-    scene.add(contestMarkerMesh);
-
-    // Path lines: one faint line per player from their start position to P,
-    // rebuilt fresh for each contest (see the animate() loop) and hidden
-    // until the first one plays.
-    const contestPathGroup = new THREE.Group();
-    scene.add(contestPathGroup);
-    const clearContestPaths = () => {
-      while (contestPathGroup.children.length) {
-        const c = contestPathGroup.children.pop() as THREE.Line;
-        c.geometry?.dispose();
-        (c.material as THREE.Material)?.dispose();
-      }
-    };
 
     // Stadium — oval crowd tier with sparkles and LED ribbon
     const crowdCanvas = document.createElement("canvas");
@@ -1245,9 +1217,6 @@ export default function FreeThrowSim({
     stateRef.current.trajLine = trajLine;
     stateRef.current.keyMaterial = keyMat;
     stateRef.current.contestPlayerMeshes = contestPlayerMeshes;
-    stateRef.current.contestMarkerMesh = contestMarkerMesh;
-    stateRef.current.contestPathGroup = contestPathGroup;
-    stateRef.current.contestClearPaths = clearContestPaths;
 
     // Position ball at release
     const rp = releasePosition();
@@ -1298,82 +1267,6 @@ export default function FreeThrowSim({
           st.landingFired = true;
           const [fx, fz] = st.result.floorPoint!;
           onLanding({ x: fx, z: fz, made: st.result.outcome === "made" });
-
-          // Rebound contest (src/rebound/contest.ts) — only for shots that
-          // actually touched the rim; a clean swish or airball never
-          // produces a rebound to contest (see contest.ts's module comment).
-          // Triggered at this same playback moment (ball reaching the
-          // floor) for timing convenience only — the point contested is a
-          // DIFFERENT, earlier point on the same trajectory; see below.
-          if (st.contestPlayerMeshes) {
-            for (const mesh of st.contestPlayerMeshes) mesh.scale.set(1, 1, 1);
-          }
-          // Contested at the ball's standing-reach catch point (in the air,
-          // after rim contact), NOT the floor landing used just above for
-          // onLanding — see core.ts's contestPoint/REBOUND_CATCH_HEIGHT_M.
-          // Players still meet on the floor at this point's (x,z); only the
-          // height it was picked at differs from a literal floor bounce.
-          const contestXZ = st.result.contestPoint;
-          if (st.result.rimContacts > 0 && st.result.firstRimContactTime !== null && st.contestMarkerMesh && contestXZ) {
-            const [cx, cz] = contestXZ;
-            // FIBA 44.2.4: lane players may move from ball release, not
-            // t_rim — see contest.ts's startDelayFor. This shot's own
-            // release-to-rim flight time is the real releaseToRimS value.
-            const releaseToRimS = st.result.firstRimContactTime;
-            const contest: ContestResult = contestLanding(cx, cz, releaseToRimS);
-            if (contest.winnerTeam === "out") {
-              // No rebound to contest — ball is out of bounds. Players stay
-              // at their fixed spots, no marker, no animation.
-              st.contestAnim = null;
-              st.contestMarkerMesh.visible = false;
-              clearContestPaths();
-            } else {
-              st.contestMarkerMesh.visible = true;
-              st.contestMarkerMesh.position.set(cx, CONTEST_MARKER_Y, cz);
-
-              const tRimStartMs = st.playStartTime + st.result.firstRimContactTime * 1000;
-              const arrivalMsById: Record<string, number> = {};
-              const moveStartMsById: Record<string, number> = {};
-              // Ineligible attackers (idealized box-out — see contest.ts's
-              // isAttackerEligible) deliberately get NO entry here: the
-              // per-frame animation loop treats a missing id as "stay at
-              // start position," which is exactly "visibly fail to reach
-              // it" without any extra state to track.
-              for (const a of contest.arrivals) {
-                if (!a.eligible) continue;
-                arrivalMsById[a.id] = tRimStartMs + a.arrival * 1000;
-                moveStartMsById[a.id] = tRimStartMs + startDelayFor(a.id, releaseToRimS) * 1000;
-              }
-
-              st.contestAnim = {
-                tRimStartMs,
-                moveStartMsById,
-                P: contest.P,
-                arrivalMsById,
-                winnerId: contest.winnerTeam === "tie" ? null : contest.winnerId,
-                highlighted: false,
-              };
-
-              clearContestPaths();
-              const pathMat = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 });
-              for (const p of PLAYERS) {
-                const geo = new THREE.BufferGeometry().setFromPoints([
-                  new THREE.Vector3(p.x, CONTEST_PATH_Y, p.z),
-                  new THREE.Vector3(cx, CONTEST_PATH_Y, cz),
-                ]);
-                contestPathGroup.add(new THREE.Line(geo, pathMat));
-              }
-            }
-          } else {
-            // Shot never touched the rim (the normal case here) — "show no
-            // contest" per spec: no marker, no path lines, players stay
-            // put. Also covers the essentially-never case where even the
-            // fallback contest point came back null (both catch and floor
-            // points missing).
-            st.contestAnim = null;
-            if (st.contestMarkerMesh) st.contestMarkerMesh.visible = false;
-            clearContestPaths();
-          }
         }
 
         const finalT = traj[(sampleCount - 1) * 4];
@@ -1403,42 +1296,55 @@ export default function FreeThrowSim({
         }
       }
 
-      // Rebound-contest playback: runs every frame independent of st.flying
-      // — players keep running toward the rebound spot for a bit after the
-      // ball itself has already landed (and possibly finished settling).
-      if (st.contestAnim && st.contestPlayerMeshes) {
-        const anim = st.contestAnim;
-        const nowMs = now;
+      // Rebound-contest playback (src/rebound/movement.ts): runs every frame
+      // independent of st.flying — players keep running toward the ball's
+      // current spot for a bit after the ball itself has already landed
+      // (and possibly finished settling). Interpolates movement.frames
+      // (flat [t, x0,z0, ... x5,z5], same PLAYERS order/index as
+      // contestPlayerMeshes) against the SAME elapsed-since-release clock
+      // the ball's own trajectory above uses, so a player's first step
+      // happens exactly at the instant of release, not at landing.
+      const movement = st.movement;
+      if (movement && movement.frames.length > 0 && st.contestPlayerMeshes) {
+        const frameSize = 1 + PLAYERS.length * 2;
+        const frameCount = movement.frames.length / frameSize;
+        const mf = movement.frames;
+        const mElapsed = (now - st.playStartTime) / 1000;
+
+        while (st.movementCursor < frameCount - 2 && mf[(st.movementCursor + 1) * frameSize] <= mElapsed) {
+          st.movementCursor++;
+        }
+        const f0 = st.movementCursor * frameSize;
+        const f1 = Math.min(st.movementCursor + 1, frameCount - 1) * frameSize;
+        const segDurM = mf[f1] - mf[f0];
+        const fracM = segDurM > 0 ? Math.min(1, Math.max(0, (mElapsed - mf[f0]) / segDurM)) : 1;
+
         for (let i = 0; i < PLAYERS.length; i++) {
-          const p = PLAYERS[i];
-          const mesh = st.contestPlayerMeshes[i];
-          const arrivalMs = anim.arrivalMsById[p.id];
-          const moveStartMs = anim.moveStartMsById[p.id];
-          if (arrivalMs === undefined || moveStartMs === undefined || nowMs <= moveStartMs) {
-            mesh.position.set(p.x, CONTEST_PLAYER_Y, p.z);
-            continue;
-          }
-          const travelMs = Math.max(1e-6, arrivalMs - moveStartMs);
-          const frac = Math.min(1, (nowMs - moveStartMs) / travelMs);
-          mesh.position.set(p.x + (anim.P.x - p.x) * frac, CONTEST_PLAYER_Y, p.z + (anim.P.z - p.z) * frac);
+          const px0 = mf[f0 + 1 + i * 2], pz0 = mf[f0 + 2 + i * 2];
+          const px1 = mf[f1 + 1 + i * 2], pz1 = mf[f1 + 2 + i * 2];
+          st.contestPlayerMeshes[i].position.set(px0 + (px1 - px0) * fracM, CONTEST_PLAYER_Y, pz0 + (pz1 - pz0) * fracM);
         }
 
-        if (!anim.highlighted && anim.winnerId !== null) {
-          const winnerArrivalMs = anim.arrivalMsById[anim.winnerId];
-          if (winnerArrivalMs !== undefined && nowMs >= winnerArrivalMs) {
-            anim.highlighted = true;
-            const winnerIndex = PLAYERS.findIndex((p) => p.id === anim.winnerId);
-            if (winnerIndex >= 0) {
-              st.contestPlayerMeshes[winnerIndex].scale.set(
-                CONTEST_WINNER_HIGHLIGHT_SCALE,
-                CONTEST_WINNER_HIGHLIGHT_SCALE,
-                CONTEST_WINNER_HIGHLIGHT_SCALE,
-              );
-              const winnerTeam = PLAYERS[winnerIndex].team;
-              setContestLabel(winnerTeam === "offense" ? "Offense gets the rebound" : "Defense gets the rebound");
-              setTimeout(() => setContestLabel(null), CONTEST_LABEL_DURATION_MS);
-            }
+        // Winner highlight/label: fires once, exactly when the ball is
+        // caught (movement.catchTime) — only for a clear offense/defense
+        // winner; "tie"/"out"/"none" never highlight (see movement.ts).
+        if (
+          !st.movementHighlighted &&
+          (movement.winnerTeam === "offense" || movement.winnerTeam === "defense") &&
+          movement.catchTime !== null &&
+          mElapsed >= movement.catchTime
+        ) {
+          st.movementHighlighted = true;
+          const winnerIndex = movement.winnerId ? PLAYERS.findIndex((p) => p.id === movement.winnerId) : -1;
+          if (winnerIndex >= 0) {
+            st.contestPlayerMeshes[winnerIndex].scale.set(
+              CONTEST_WINNER_HIGHLIGHT_SCALE,
+              CONTEST_WINNER_HIGHLIGHT_SCALE,
+              CONTEST_WINNER_HIGHLIGHT_SCALE,
+            );
           }
+          setContestLabel(movement.winnerTeam === "offense" ? "Offense gets the rebound" : "Defense gets the rebound");
+          setTimeout(() => setContestLabel(null), CONTEST_LABEL_DURATION_MS);
         }
       }
 
@@ -1602,16 +1508,27 @@ export default function FreeThrowSim({
     const rp = releasePosition();
     st.ball.position.copy(rp);
     st.result = simulate(shotParamsFromControls(controls));
+    // Computed once, right now, alongside the physics result — see
+    // movement.ts's own header for why this is a frame-by-frame simulation
+    // rather than a single closed-form "run straight to the final point"
+    // calculation. Dev-only one-line diagnostic per shot (task's own ask).
+    st.movement = simulateRebound(st.result);
+    st.movementHighlighted = false;
+    if (import.meta.env.DEV) {
+      const m = st.movement;
+      console.log(
+        `[rebound] tRim=${m.tRim?.toFixed(3) ?? "null"} winnerTeam=${m.winnerTeam} winnerId=${m.winnerId} catchTime=${m.catchTime?.toFixed(3) ?? "null"} overlapViolations=${m.overlapViolations}`,
+      );
+    }
     st.flying = true;
     st.landingFired = false;
     st.playStartTime = performance.now();
     st.trajCursor = 0;
-    // Clear any leftover contest visuals from the previous shot immediately
-    // — otherwise a stale P marker/highlighted winner from the last miss
-    // would sit on the court through this new shot's entire flight.
-    st.contestAnim = null;
-    if (st.contestMarkerMesh) st.contestMarkerMesh.visible = false;
-    st.contestClearPaths?.();
+    st.movementCursor = 0;
+    // Reset player discs to their fixed start positions immediately — the
+    // animate() loop's own per-frame positioning (driven by st.movement)
+    // takes over the instant playback resumes, but this means a stale
+    // highlighted/final pose from the previous shot never lingers.
     if (st.contestPlayerMeshes) {
       for (let i = 0; i < PLAYERS.length; i++) {
         st.contestPlayerMeshes[i].position.set(PLAYERS[i].x, CONTEST_PLAYER_Y, PLAYERS[i].z);

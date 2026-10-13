@@ -28,6 +28,23 @@ export interface Player {
 export const OFFENSE_COLOR = 0x22c55e;
 export const DEFENSE_COLOR = 0x8b5cf6;
 
+// Half of 517 mm, the mean male bideltoid breadth (max shoulder width incl.
+// deltoid muscles) from Guan et al., 2020, Journal of Safety Research
+// (US EMS workers, n=471 men). No basketball-specific bideltoid data found;
+// used because that population's biacromial (bone) breadth, 422 mm, is within
+// 7 mm of professional basketball players' 429 mm.
+export const PLAYER_RADIUS_M = 0.2585;
+
+// Male basketball players' left-turn change-of-direction deficit, 0.638 ± 0.137 s
+// (n = 17), Dos'Santos T, Thomas C, Comfort P, Jones PA. Sports 2018;6(4):174,
+// doi:10.3390/sports6040174, Table 2. The right-turn value (0.579 s) is NOT used:
+// the authors report its CV as 15.5%, above their 15% acceptability limit.
+// Measured as a 180° turn after a running approach (includes braking), so it is
+// likely an upper bound for a turn from standing. TEMPORARY — may be replaced
+// by a value supplied by the teacher.
+export const TURN_TIME_S = 0.638;
+export const TURN_THRESHOLD_DEG = 90;
+
 export const PLAYERS: Player[] = [
   // Defenders — purple. Block spaces nearest the rim.
   { id: "D_L", team: "defense", x: -2.45, z: -0.73 },
