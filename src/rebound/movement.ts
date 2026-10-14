@@ -25,51 +25,64 @@
 //      0.3s after the rim, the shooter for 0.6s (FIBA: lane players may move
 //      from ball release already passed in phase 1's own clock; what they're
 //      actually waiting out here is their own reaction time to the rim hit).
-//   3. CHASE (t >= a player's own start time): every step, walk straight at
-//      the floor point directly under the ball's CURRENT (x, z) — re-aimed
-//      every step as the ball moves, never the ball's future position.
+//   3. ATTACKERS chase, DEFENDERS mirror (t >= a player's own start time) —
+//      see ATTACKER CHASE and DEFENDER MIRRORING below. Processed in a
+//      different order than phases 1/2: every step, ALL attackers move
+//      first (PLAYERS order), THEN all defenders (PLAYERS order) — so a
+//      defender's mirroring reacts to his attacker's brand-new position from
+//      the very same step, not last step's.
 //
 // Collisions apply in every phase: two players' centres never close to less
 // than 2*PLAYER_RADIUS_M, and every player's step is checked against every
-// other player (no "defenders only see defenders" carve-out any more — see
-// GO-AROUND below for why that mattered).
+// other player.
 //
-// GO-AROUND (sliding): a straight-line stop-at-contact step leaves players
-// stuck in the wrong place — a box-out defender can end up stuck diagonally
-// beside its attacker (not between it and the rim) if its approach path
-// wasn't radial, and a chasing player can get stuck behind a blocker
-// forever. Three call sites slide around a blocker instead of just
-// stopping, ALL through the same shared primitive slideStep() (see its own
-// comment for the geometry — contact circle, locked rotation side, release
-// condition):
-//   - PHASE 1 defenders, toward their box-out target (attackerBoxoutStep for
-//     the two non-shooter attackers is unchanged — they still just stop).
-//   - PHASE 3, ALL SIX players (chaseStep), toward the ball's current floor
-//     point — defenders go around too now, same as attackers.
+// ATTACKER CHASE (phase 3, O_L/O_R/SHOOTER only): go-around capable — a
+// straight-line stop-at-contact step can leave an attacker stuck behind a
+// blocker forever, so attackerChaseStep() slides around one instead, via the
+// shared slideStep() primitive (see its own comment for the geometry —
+// contact circle, locked rotation side, release condition). Re-aimed at the
+// ball's CURRENT floor point every step, never its future one.
 //
-// TURNING (phase 3 only, all six players, same rule): a player doesn't
-// already know which way to run the instant his chase starts — he's been
-// facing the basket (box-out / waiting out the reaction delay), and if the
-// ball's current floor point is behind him relative to that facing, he
-// spends TURN_TIME_S turning in place (still an obstacle, per FIBA/real
-// life) before the chase itself begins. Decided ONCE, at the exact moment
-// his own chase starts; never re-evaluated afterward. See players.ts for
-// TURN_TIME_S/TURN_THRESHOLD_DEG and their sourcing.
+// DEFENDER MIRRORING (phase 3, D_L/D_R/D_3 only) — replaces the old
+// "defenders chase the ball too" model, which let a defender's own chase
+// slide around its paired attacker and, when the ball settled near the rim
+// where two players' targets nearly coincide, occasionally fall into a
+// sustained mutual-circling deadlock with whoever else was converging on the
+// same spot (measured: 20.6% of qualifying shots swept >180° around the same
+// blocker at least once, worst case 588.7°). Defenders here NEVER slide —
+// blocked, they just shorten the step and stop (moveToward, same primitive
+// attackerBoxoutStep always used) — so that failure mode is structurally
+// impossible for them. Two sub-phases, by ball height, never revisited once
+// past:
+//   - GUARD (defender's own reaction end <= t < tCatchable, this shot's
+//     first post-tRim moment the ball's height drops to <= standing-reach
+//     catch height): target = the point exactly MIN_SEPARATION_M from the
+//     PAIRED ATTACKER's current centre, on the line toward the ball's
+//     current floor point — i.e. directly between attacker and ball, bodies
+//     touching. Re-aimed every step from both the attacker's and the ball's
+//     CURRENT positions, never predicted. "Stays in front despite the
+//     attacker trying to slide past", "doesn't retreat toward the ball
+//     himself", and "can't get in front if the attacker's already past him"
+//     are NOT special-cased anywhere below — they fall straight out of
+//     recomputing this one target every step and moving toward it with the
+//     ordinary blocked-stop primitive.
+//   - BALL (t >= tCatchable, permanently): target = the ball's current floor
+//     point directly, same as an attacker's chase target, just without the
+//     sliding.
 //
 // OUT OF BOUNDS (FIBA Official Basketball Rules 2026, Article 23; see
 // isPointOut/isPlayerOut below for the exact boundary + player tests):
-// replaces the old, simpler "ball's (x,z) out while below catch height"
-// check with the actual rule — the ball is out only once it touches the
-// floor (or is caught) on or beyond a boundary line; merely flying over one
-// while still airborne is NOT out (23.1.2 first two bullets), and a player
-// may freely stand out of bounds (23.1.1) — it only matters if THAT player
-// is the one who ends up catching the ball (23.1.1 again: the ball is
-// out-of-bounds when it touches a player who is out of bounds).
+// the ball is out only once it touches the floor (or is caught) on or beyond
+// a boundary line; merely flying over one while still airborne is NOT out
+// (23.1.2 first two bullets), and a player may freely stand out of bounds
+// (23.1.1) — it only matters if THAT player is the one who ends up catching
+// the ball (23.1.1 again: the ball is out-of-bounds when it touches a player
+// who is out of bounds).
 
 import type { ShotResult } from "@/physics/core";
 import { REBOUND_CATCH_HEIGHT_M, COURT_WIDTH_M, BASELINE_TO_RIM_M, BALL_RADIUS_M } from "@/physics/constants";
 import { PLAYER_SPEED_MPS, REACTION_S, SHOOTER_RECOVERY_S, PAIRING } from "./contest";
-import { PLAYERS, PLAYER_RADIUS_M, TURN_TIME_S, TURN_THRESHOLD_DEG, type Team } from "./players";
+import { PLAYERS, PLAYER_RADIUS_M, type Team } from "./players";
 
 const MOVEMENT_DT_S = 0.005; // fixed step
 const MOVEMENT_MAX_AFTER_RIM_S = 10; // safety cap — stop looking for a catch this long after the rim
@@ -91,6 +104,7 @@ const FRAME_STRIDE_STEPS = 2; // store every 2 steps (0.01 s) — see MOVEMENT_D
 // too small to be visible against a 0.2585m player radius.
 const OVERLAP_EPSILON_M = 1e-3;
 const TIE_EPSILON_M = 1e-6; // float slack for "exactly equal" catch distances
+const BALL_AT_ATTACKER_EPSILON_M = 1e-6; // "ball's floor point within 1e-6m of the attacker's centre" — DEFENDER MIRRORING's degenerate case
 
 export interface MovementResult {
   winnerTeam: Team | "tie" | "out" | "none";
@@ -148,6 +162,32 @@ function makeBallSampler(trajectory: Float32Array) {
       z: trajectory[i0 + 3] + (trajectory[i1 + 3] - trajectory[i0 + 3]) * frac,
     };
   };
+}
+
+// First moment strictly after tRim that the ball's HEIGHT (not an
+// interpolated guess — the actual recorded samples) drops to or below
+// REBOUND_CATCH_HEIGHT_M, linearly interpolated between the two bracketing
+// samples for the crossing instant itself. Infinity if the recorded
+// trajectory never does (defenders then stay in GUARD mode for the whole
+// simulated window — see DEFENDER MIRRORING above).
+function computeTCatchable(trajectory: Float32Array, tRim: number): number {
+  const sampleCount = trajectory.length / 4;
+  let prevT: number | null = null;
+  let prevY: number | null = null;
+  for (let i = 0; i < sampleCount; i++) {
+    const t = trajectory[i * 4];
+    const y = trajectory[i * 4 + 2];
+    if (t > tRim && y <= REBOUND_CATCH_HEIGHT_M) {
+      if (prevT !== null && prevY !== null && prevY > REBOUND_CATCH_HEIGHT_M && t > prevT) {
+        const frac = (prevY - REBOUND_CATCH_HEIGHT_M) / (prevY - y);
+        return prevT + (t - prevT) * frac;
+      }
+      return t;
+    }
+    prevT = t;
+    prevY = y;
+  }
+  return Infinity;
 }
 
 // How far (starting from `cur`, heading in the unit direction `dir`) you can
@@ -249,8 +289,9 @@ function makeFloorOutOfBoundsScanner(trajectory: Float32Array) {
 // Moves `cur` toward `target` at up to `maxDist` this step (never overshoots
 // the target), shortened if needed so every blocker in `blockers` stays at
 // least MIN_SEPARATION_M away. No sliding/routing around a blocker — a
-// blocked player simply stops at contact. Still used where go-around doesn't
-// apply: attackerBoxoutStep (phase 1 only — see this file's header).
+// blocked player simply stops at contact. Used by: attackerBoxoutStep
+// (phase 1), and every defender in phase 3 (GUARD and BALL mode alike — see
+// this file's header: defenders never slide any more).
 function moveToward(cur: Vec2, target: Vec2, maxDist: number, blockers: Vec2[]): Vec2 {
   const dx = target.x - cur.x;
   const dz = target.z - cur.z;
@@ -272,7 +313,10 @@ function pairedAttackerId(defenderId: string): string {
 
 // Defender's box-out target: the point exactly MIN_SEPARATION_M from the
 // paired attacker's CURRENT centre, on the line toward the rim (0,0) — i.e.
-// touching distance, between the attacker and the basket.
+// touching distance, between the attacker and the basket. Also reused as
+// DEFENDER MIRRORING's degenerate-case fallback (ball sitting exactly on the
+// attacker with no prior GUARD target yet to fall back on) — see
+// guardTargetFor below.
 function defenderBoxoutTarget(attackerPos: Vec2): Vec2 {
   const dx = -attackerPos.x;
   const dz = -attackerPos.z;
@@ -281,17 +325,36 @@ function defenderBoxoutTarget(attackerPos: Vec2): Vec2 {
   return { x: attackerPos.x + (dx / dist) * MIN_SEPARATION_M, z: attackerPos.z + (dz / dist) * MIN_SEPARATION_M };
 }
 
+// DEFENDER MIRRORING's GUARD-mode target: the point exactly MIN_SEPARATION_M
+// from the paired attacker's CURRENT centre, on the line toward the ball's
+// CURRENT floor point — directly between attacker and ball. If the ball's
+// floor point is (within float noise) exactly on the attacker's centre,
+// there's no direction to place the target along, so the spec says keep
+// whatever target was last used; `prevTarget` is null only on a defender's
+// very first GUARD-mode tick (before any target has ever been computed),
+// which this falls back to defenderBoxoutTarget's own rim-ward direction for
+// — an arbitrary but deterministic choice for an astronomically unlikely
+// coincidence.
+function guardTargetFor(attackerPos: Vec2, ballXZ: Vec2, prevTarget: Vec2 | null): Vec2 {
+  const toBall: Vec2 = { x: ballXZ.x - attackerPos.x, z: ballXZ.z - attackerPos.z };
+  const toBallLen = Math.hypot(toBall.x, toBall.z);
+  if (toBallLen < BALL_AT_ATTACKER_EPSILON_M) {
+    return prevTarget ?? defenderBoxoutTarget(attackerPos);
+  }
+  return {
+    x: attackerPos.x + (toBall.x / toBallLen) * MIN_SEPARATION_M,
+    z: attackerPos.z + (toBall.z / toBallLen) * MIN_SEPARATION_M,
+  };
+}
+
 // ---------------------------------------------------------------------------
-// GO-AROUND (sliding)
-//
-// A player currently routing around one blocker, locked to one rotational
-// side until released. One SlideState per player, reused SEQUUENTIALLY
-// across however many phases that player slides in — a defender can slide
-// in phase 1 (box-out) and again in phase 3 (chase), just never both at
-// once, since phase 1 is fully over before any player's own phase 3 begins.
-// simulateRebound resets a player's slot to fresh the moment his own chase
-// starts (same moment the target switches from the box-out point to the
-// ball) — see the turn-decision block there.
+// GO-AROUND (sliding) — ATTACKERS ONLY now (phase 1 defenders during
+// box-out, and phase 3 attackers during their chase; see this file's
+// header). One SlideState per player, reused SEQUENTIALLY across however
+// many phases that player slides in — a defender slides in phase 1
+// (box-out) only; an attacker slides in phase 3 (chase) only; neither
+// crosses into the other's territory, so there's no reset-on-handoff to
+// worry about any more (unlike the old defender-also-chases model).
 // ---------------------------------------------------------------------------
 interface SlideState {
   blockerIdx: number | null;
@@ -314,16 +377,6 @@ function ccwDelta(from: number, to: number): number {
   let d = (to - from) % twoPi;
   if (d < 0) d += twoPi;
   return d;
-}
-
-// Unsigned angle between two vectors, in degrees, in [0, 180]. Used for the
-// turn decision (CHANGE 2) — neither input needs to be pre-normalized.
-function angleBetweenDeg(a: Vec2, b: Vec2): number {
-  const magA = Math.hypot(a.x, a.z);
-  const magB = Math.hypot(b.x, b.z);
-  if (magA < 1e-12 || magB < 1e-12) return 0;
-  const cos = Math.max(-1, Math.min(1, (a.x * b.x + a.z * b.z) / (magA * magB)));
-  return Math.acos(cos) * (180 / Math.PI);
 }
 
 // One-time decision (made exactly at first contact with `blocker`, then
@@ -378,18 +431,18 @@ function chooseSlideSide(cur: Vec2, center: Vec2, target: Vec2): 1 | -1 {
   return ccwTotal <= cwTotal ? 1 : -1;
 }
 
-// The shared sliding primitive (one helper, used by every go-around call
-// site — phase 1 defenders, and all six players in phase 3): moves `cur`
-// along the contact circle (centre = blocker, radius = MIN_SEPARATION_M) by up to
-// `maxDist` of arc, in the locked `side` direction. Steps along the tangent
-// at the current angle, then re-projects back onto the circle, so centre
-// distance from `blocker` stays exactly MIN_SEPARATION_M every step (never
-// drifts in or out). If the tangent step would bring `cur` within
-// MIN_SEPARATION_M of a DIFFERENT player in `otherBlockerIdx`/`pos`, the
-// step is shortened (the short tangent segment is treated as its own chord
-// for this check — accurate to O(step^2), negligible at this step's actual
-// size) to the first such contact, and that player's index is returned as
-// `interruptedBy` so the caller can switch the lock to them.
+// The shared sliding primitive (used by phase 1 defenders and phase 3
+// attackers — see this file's header): moves `cur` along the contact circle
+// (centre = blocker, radius = MIN_SEPARATION_M) by up to `maxDist` of arc, in
+// the locked `side` direction. Steps along the tangent at the current angle,
+// then re-projects back onto the circle, so centre distance from `blocker`
+// stays exactly MIN_SEPARATION_M every step (never drifts in or out). If the
+// tangent step would bring `cur` within MIN_SEPARATION_M of a DIFFERENT
+// player in `otherBlockerIdx`/`pos`, the step is shortened (the short
+// tangent segment is treated as its own chord for this check — accurate to
+// O(step^2), negligible at this step's actual size) to the first such
+// contact, and that player's index is returned as `interruptedBy` so the
+// caller can switch the lock to them.
 function slideStep(
   cur: Vec2,
   blocker: Vec2,
@@ -437,19 +490,19 @@ function slideStep(
   return { pos: newPos, interruptedBy };
 }
 
-// Shared orchestration for every go-around call site. EVERY step, first
-// checks whether a straight line at `target` (up to this step's distance)
-// is clear of EVERYONE in `blockerIdx` — not just whatever's currently
-// locked. This single check does double duty: it's the normal "try a direct
-// step" path when nothing is locked, AND it's the release condition for an
-// active lock (checking against everyone, not only the locked blocker, is a
-// strictly stronger and more robust release test — relying on just the
-// locked blocker's own near-tangent math is numerically fragile exactly
-// when, as is typical here, `target` sits ON that blocker's own circle, so
-// the "clear" segment to it is vanishingly short). If something blocks:
-// already locked onto that same thing → keep sliding, side unchanged;
-// otherwise (freshly blocked, or blocked by someone new) → lock onto it and
-// choose a side now.
+// Shared orchestration for every go-around call site (phase 1 defenders,
+// phase 3 attackers). EVERY step, first checks whether a straight line at
+// `target` (up to this step's distance) is clear of EVERYONE in
+// `blockerIdx` — not just whatever's currently locked. This single check
+// does double duty: it's the normal "try a direct step" path when nothing is
+// locked, AND it's the release condition for an active lock (checking
+// against everyone, not only the locked blocker, is a strictly stronger and
+// more robust release test — relying on just the locked blocker's own
+// near-tangent math is numerically fragile exactly when, as is typical here,
+// `target` sits ON that blocker's own circle, so the "clear" segment to it
+// is vanishingly short). If something blocks: already locked onto that same
+// thing → keep sliding, side unchanged; otherwise (freshly blocked, or
+// blocked by someone new) → lock onto it and choose a side now.
 function moveWithSliding(
   cur: Vec2,
   target: Vec2,
@@ -559,23 +612,21 @@ function moveWithSliding(
   return newPos;
 }
 
-// ATTACKERS O_L/O_R, phase 1: unchanged — walk straight at the rim, stop at
-// contact, no sliding (kept as its own named step per the box-out header —
-// a future attacker go-around in PHASE 1 specifically would only touch this
-// function).
+// ATTACKERS O_L/O_R, phase 1: walk straight at the rim, stop at contact, no
+// sliding.
 function attackerBoxoutStep(cur: Vec2, blockers: Vec2[]): Vec2 {
   return moveToward(cur, { x: 0, z: 0 }, PLAYER_SPEED_MPS * MOVEMENT_DT_S, blockers);
 }
 
-// DEFENDERS, phase 1: now go-around capable — see moveWithSliding.
+// DEFENDERS, phase 1: go-around capable — see moveWithSliding.
 function defenderBoxoutStep(cur: Vec2, attackerPos: Vec2, blockerIdx: number[], pos: Vec2[], slideState: SlideState): Vec2 {
   return moveWithSliding(cur, defenderBoxoutTarget(attackerPos), PLAYER_SPEED_MPS * MOVEMENT_DT_S, blockerIdx, pos, slideState);
 }
 
-// ALL SIX players, phase 3 (CHANGE 1): go-around capable — defenders used
-// to just stop at contact here (defenderChaseStep); now everyone shares
-// this one function, same as attackers always did.
-function chaseStep(cur: Vec2, ballXZ: Vec2, blockerIdx: number[], pos: Vec2[], slideState: SlideState): Vec2 {
+// ATTACKERS O_L/O_R/SHOOTER, phase 3: go-around capable, toward the ball's
+// current floor point — see moveWithSliding. Defenders never call this any
+// more (see DEFENDER MIRRORING in this file's header).
+function attackerChaseStep(cur: Vec2, ballXZ: Vec2, blockerIdx: number[], pos: Vec2[], slideState: SlideState): Vec2 {
   return moveWithSliding(cur, ballXZ, PLAYER_SPEED_MPS * MOVEMENT_DT_S, blockerIdx, pos, slideState);
 }
 
@@ -583,47 +634,34 @@ function startTimeFor(playerId: string, tRim: number): number {
   return playerId === "SHOOTER" ? tRim + REACTION_S + SHOOTER_RECOVERY_S : tRim + REACTION_S;
 }
 
-// Optional out-param for scripts/reboundStats.ts's "% turned per player"
-// column (CHANGE 2 measurement) — exact, not reconstructed from frames:
-// filled in at the same moment, with the same values, the turn decision
-// itself uses below. Does not change MovementResult's own shape.
-export interface TurnDebug {
-  turnedById: Record<string, boolean>;
-}
-
-export function simulateRebound(result: ShotResult, debugOut?: TurnDebug): MovementResult {
-  if (debugOut) {
-    for (const p of PLAYERS) debugOut.turnedById[p.id] = false;
-  }
+export function simulateRebound(result: ShotResult): MovementResult {
   if (result.rimContacts === 0 || result.outcome === "made" || result.firstRimContactTime === null) {
     return emptyResult();
   }
   const tRim = result.firstRimContactTime;
   const ballAt = makeBallSampler(result.trajectory);
+  const tCatchable = computeTCatchable(result.trajectory, tRim);
 
   const pos: Vec2[] = PLAYERS.map((p) => ({ x: p.x, z: p.z }));
   const idToIndex = new Map(PLAYERS.map((p, i) => [p.id, i]));
   const defenderIdx = PLAYERS.map((p, i) => (p.team === "defense" ? i : -1)).filter((i) => i >= 0);
   const attackerIdx = PLAYERS.map((p, i) => (p.team === "offense" ? i : -1)).filter((i) => i >= 0);
-  // "Process players in a fixed order each step: defenders first (PLAYERS
-  // order), then attackers (PLAYERS order)" — applies in every phase.
-  const processOrder = [...defenderIdx, ...attackerIdx];
+  // Phase 1 (box-out): defenders first, then attackers (PLAYERS order within
+  // each group) — unchanged from before.
+  const phase1Order = [...defenderIdx, ...attackerIdx];
 
   const otherPositions = (idx: number, pool: number[]): Vec2[] => pool.filter((i) => i !== idx).map((i) => pos[i]);
   const allOtherPositions = (idx: number): Vec2[] => otherPositions(idx, [...defenderIdx, ...attackerIdx]);
   const allOtherIdx = (idx: number): number[] => [...defenderIdx, ...attackerIdx].filter((i) => i !== idx);
 
-  // One slide lock per player, reused sequentially — see this interface's
-  // own header comment. Reset to fresh the moment a player's own phase-3
-  // chase starts (new target = the ball, not the box-out point).
+  // One slide lock per ATTACKER only now (phase 3) — see this file's GO-AROUND
+  // header comment. Defenders never slide in phase 3, so their slot here is
+  // allocated but never touched past phase 1.
   const slideStates: SlideState[] = PLAYERS.map(() => freshSlideState());
 
-  // CHANGE 2 (turning): per player, has the one-time chase-start decision
-  // (turn or not?) been made yet, and if so, when does any turn end (== the
-  // decision moment itself if no turn was needed)? See the phase-3 branch
-  // below for where these are set, exactly once each, per shot.
-  const chaseStartDecided: boolean[] = PLAYERS.map(() => false);
-  const turnEndTime: (number | null)[] = PLAYERS.map(() => null);
+  // DEFENDER MIRRORING's GUARD-mode "keep the previous target" memory — see
+  // guardTargetFor's own comment for when this is read.
+  const lastGuardTarget: (Vec2 | null)[] = PLAYERS.map(() => null);
 
   const scanFloorOutOfBounds = makeFloorOutOfBoundsScanner(result.trajectory);
 
@@ -656,45 +694,45 @@ export function simulateRebound(result: ShotResult, debugOut?: TurnDebug): Movem
     step++;
     const t = step * MOVEMENT_DT_S;
 
-    for (const idx of processOrder) {
-      const player = PLAYERS[idx];
-      if (t < tRim) {
-        // PHASE 1 — box-out.
+    if (t < tRim) {
+      // PHASE 1 — box-out.
+      for (const idx of phase1Order) {
+        const player = PLAYERS[idx];
         if (player.id === "SHOOTER") continue; // doesn't move until the rim is touched
         if (player.team === "defense") {
           const attackerPos = pos[idToIndex.get(pairedAttackerId(player.id))!];
-          // Blocked by EVERYONE now (go-around replaced the old "defenders
-          // only see other defenders" carve-out — see this file's header).
           pos[idx] = defenderBoxoutStep(pos[idx], attackerPos, allOtherIdx(idx), pos, slideStates[idx]);
         } else {
           pos[idx] = attackerBoxoutStep(pos[idx], allOtherPositions(idx));
         }
-      } else {
-        // PHASE 2 (reaction, implicit below) / PHASE 3 (chase, CHANGE 1: all
-        // six players now go-around capable, via the one shared chaseStep).
+      }
+    } else {
+      // PHASE 2 (reaction, implicit below) / PHASE 3: ATTACKERS move first
+      // (chase, sliding), THEN DEFENDERS (mirroring, no sliding) — so a
+      // defender's mirror target reacts to his attacker's brand-new position
+      // from this very step. See this file's header.
+      for (const idx of attackerIdx) {
+        const player = PLAYERS[idx];
         const myChaseStart = startTimeFor(player.id, tRim);
         if (t < myChaseStart) continue; // still reacting — stay put
-
-        if (!chaseStartDecided[idx]) {
-          // CHANGE 2 (turning): decided exactly once, right here, at the
-          // first tick of this player's own chase start — never
-          // re-evaluated afterward even if the ball later moves behind him.
-          chaseStartDecided[idx] = true;
-          slideStates[idx] = freshSlideState(); // fresh lock: the target just switched from the box-out point to the ball
-          const ballNow = ballAt(t);
-          const toBall: Vec2 = { x: ballNow.x - pos[idx].x, z: ballNow.z - pos[idx].z };
-          if (Math.hypot(toBall.x, toBall.z) < 1e-6) {
-            turnEndTime[idx] = t; // already standing on it — no turn
-          } else {
-            const facing: Vec2 = { x: -pos[idx].x, z: -pos[idx].z }; // toward the rim's floor point (0,0)
-            turnEndTime[idx] = angleBetweenDeg(facing, toBall) > TURN_THRESHOLD_DEG ? t + TURN_TIME_S : t;
-          }
-          if (debugOut) debugOut.turnedById[player.id] = turnEndTime[idx]! > t + 1e-9;
-        }
-        if (t < turnEndTime[idx]!) continue; // turning in place — still an obstacle, per the collision check below
-
         const ball = ballAt(t);
-        pos[idx] = chaseStep(pos[idx], { x: ball.x, z: ball.z }, allOtherIdx(idx), pos, slideStates[idx]);
+        pos[idx] = attackerChaseStep(pos[idx], { x: ball.x, z: ball.z }, allOtherIdx(idx), pos, slideStates[idx]);
+      }
+      for (const idx of defenderIdx) {
+        const player = PLAYERS[idx];
+        const myChaseStart = startTimeFor(player.id, tRim); // always tRim + REACTION_S — never SHOOTER
+        if (t < myChaseStart) continue; // still reacting — stay put
+
+        const attackerPos = pos[idToIndex.get(pairedAttackerId(player.id))!];
+        const ball = ballAt(t);
+        let target: Vec2;
+        if (t < tCatchable) {
+          target = guardTargetFor(attackerPos, { x: ball.x, z: ball.z }, lastGuardTarget[idx]);
+          lastGuardTarget[idx] = target;
+        } else {
+          target = { x: ball.x, z: ball.z }; // BALL mode, permanent — see this file's header
+        }
+        pos[idx] = moveToward(pos[idx], target, PLAYER_SPEED_MPS * MOVEMENT_DT_S, allOtherPositions(idx));
       }
     }
 

@@ -41,7 +41,7 @@ import {
   BASELINE_TO_RIM_M,
 } from "@/physics/constants";
 import { DEFAULT_SWEEP_RANGES, expandRange, rangeStepCount } from "@/physics/sweepConfig";
-import { simulateRebound, type MovementResult, type TurnDebug } from "@/rebound/movement";
+import { simulateRebound, type MovementResult } from "@/rebound/movement";
 import { contestLanding, isInboundsLanding, REACTION_S, SHOOTER_RECOVERY_S, PLAYER_SPEED_MPS } from "@/rebound/contest";
 import { PLAYERS, PLAYER_RADIUS_M } from "@/rebound/players";
 
@@ -161,6 +161,60 @@ function trajectoryPassesBackboardBack(trajectory: Float32Array): boolean {
   return false;
 }
 
+// Verification 5 (permanent diagnostic): % of shots where any player sweeps
+// > 180° of arc around the SAME blocker's contact circle without ever
+// breaking contact — the mutual-circling deadlock measured at 20.6% of
+// shots (worst case 588.7°) before defenders stopped sliding in phase 3.
+// Reconstructed from movement.frames (every stored (x,z) pair, every
+// player), not from any internal slide state — an ordered pair (i, j) is "in
+// contact" while their centre distance stays within ORBIT_CONTACT_EPS_M of
+// MIN_SEPARATION_M; the unwrapped angle of i around j's centre is
+// accumulated for as long as that holds, reset to 0 the moment contact
+// breaks.
+const ORBIT_MIN_SEPARATION_M = 2 * PLAYER_RADIUS_M;
+const ORBIT_CONTACT_EPS_M = 0.005; // generous vs OVERLAP_EPSILON_M (1e-3) slack already documented in movement.ts
+function shotOrbitMaxAbsDeg(movement: MovementResult): number {
+  const frameSize = 1 + PLAYERS.length * 2;
+  const frameCount = movement.frames.length / frameSize;
+  const frames = movement.frames;
+  let maxAbsDeg = 0;
+  for (let i = 0; i < PLAYERS.length; i++) {
+    for (let j = 0; j < PLAYERS.length; j++) {
+      if (i === j) continue;
+      let inContact = false;
+      let prevAngle = 0;
+      let cumulative = 0;
+      for (let f = 0; f < frameCount; f++) {
+        const xi = frames[f * frameSize + 1 + i * 2];
+        const zi = frames[f * frameSize + 2 + i * 2];
+        const xj = frames[f * frameSize + 1 + j * 2];
+        const zj = frames[f * frameSize + 2 + j * 2];
+        const d = Math.hypot(xi - xj, zi - zj);
+        const nowContact = Math.abs(d - ORBIT_MIN_SEPARATION_M) < ORBIT_CONTACT_EPS_M;
+        const angle = Math.atan2(zi - zj, xi - xj);
+        if (nowContact) {
+          if (inContact) {
+            let delta = angle - prevAngle;
+            while (delta > Math.PI) delta -= 2 * Math.PI;
+            while (delta < -Math.PI) delta += 2 * Math.PI;
+            cumulative += delta;
+          } else {
+            cumulative = 0;
+          }
+          inContact = true;
+          prevAngle = angle;
+          const absDeg = Math.abs((cumulative * 180) / Math.PI);
+          if (absDeg > maxAbsDeg) maxAbsDeg = absDeg;
+        } else {
+          inContact = false;
+          cumulative = 0;
+        }
+      }
+    }
+  }
+  return maxAbsDeg;
+}
+
 const newTally = emptyTally();
 const oldTally = emptyTally();
 
@@ -168,8 +222,9 @@ let totalOverlapViolations = 0;
 let catchTimeSum = 0;
 let catchTimeCount = 0;
 const blockedShotsById: Record<string, number> = Object.fromEntries(PLAYERS.map((p) => [p.id, 0]));
-const turnedShotsById: Record<string, number> = Object.fromEntries(PLAYERS.map((p) => [p.id, 0]));
 let backboardBackShots = 0;
+let orbitShots = 0; // shots with any pair's sweep > 180°
+let worstOrbitDeg = 0;
 
 // For each player, for each frame interval inside (his own start time,
 // catchTime), a frame counts toward "blocked time" if his displacement over
@@ -278,8 +333,7 @@ for (const angleDeg of ANGLE_VALUES) {
         tallyOutcome(oldTally, oldResult.winnerTeam as WinnerBucket, oldResult.winnerId);
 
         // --- NEW model ---
-        const turnDebug: TurnDebug = { turnedById: {} };
-        const movement = simulateRebound(result, turnDebug);
+        const movement = simulateRebound(result);
         tallyOutcome(newTally, movement.winnerTeam, movement.winnerId, movement.outReason);
         totalOverlapViolations += movement.overlapViolations;
         if (movement.catchTime !== null) {
@@ -287,10 +341,10 @@ for (const angleDeg of ANGLE_VALUES) {
           catchTimeCount++;
         }
         if (result.floorPoint) accumulateBlocked(movement, result.floorPoint);
-        for (const p of PLAYERS) {
-          if (turnDebug.turnedById[p.id]) turnedShotsById[p.id]++;
-        }
         if (trajectoryPassesBackboardBack(result.trajectory)) backboardBackShots++;
+        const orbitDeg = shotOrbitMaxAbsDeg(movement);
+        if (orbitDeg > 180) orbitShots++;
+        if (orbitDeg > worstOrbitDeg) worstOrbitDeg = orbitDeg;
       }
 
       const pct = Math.floor((processed / TOTAL_SHOTS) * 10) * 10;
@@ -351,13 +405,11 @@ for (const p of PLAYERS) {
   const n = blockedShotsById[p.id];
   console.log(`    ${p.id.padEnd(8)} ${n.toLocaleString().padStart(8)}  (${pct(n, newTally.count)})`);
 }
-console.log(`  turned (CHANGE 2) per player:`);
-for (const p of PLAYERS) {
-  const n = turnedShotsById[p.id];
-  console.log(`    ${p.id.padEnd(8)} ${n.toLocaleString().padStart(8)}  (${pct(n, newTally.count)})`);
-}
 console.log(
   `  backboard-back (limitations only — core.ts has no back face/supports): ${backboardBackShots.toLocaleString()} (${pct(backboardBackShots, newTally.count)})`,
+);
+console.log(
+  `  orbit > 180° (any player sweeping around the same blocker without breaking contact): ${orbitShots.toLocaleString()} (${pct(orbitShots, newTally.count)}), worst case ${worstOrbitDeg.toFixed(1)}°`,
 );
 
 // ---------------------------------------------------------------------------
@@ -393,8 +445,9 @@ const json = {
     totalOverlapViolations,
     blockedShotsById,
     blockedThreshold: { speedFraction: BLOCKED_SPEED_FRACTION, minTotalS: BLOCKED_MIN_TOTAL_S },
-    turnedShotsById,
     backboardBackShots,
+    orbitShots,
+    worstOrbitDeg,
   },
 };
 
