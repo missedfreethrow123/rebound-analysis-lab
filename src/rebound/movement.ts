@@ -15,60 +15,76 @@
 // Three phases, in order, per player:
 //   1. BOX-OUT (0 <= t < tRim, i.e. before the ball ever touches the rim):
 //      each defender walks to a spot exactly touching-distance from their
-//      PAIRED attacker, between that attacker and the rim — re-aiming at the
+//      PAIRED attacker, between that attacker and the rim — go-around
+//      capable (slideStep — see its own comment), re-aiming at the
 //      attacker's current position every step, never predicting where the
 //      attacker is headed. The two non-shooter attackers walk straight at
-//      the rim. The shooter does not move at all (FIBA: can't move until the
-//      ball touches the rim).
+//      the rim, stop at contact, no sliding. The shooter does not move at
+//      all (FIBA: can't move until the ball touches the rim).
 //   2. REACTION (t >= tRim, before each player's own start time): everyone
 //      just stands still exactly where phase 1 left them — lane players for
 //      0.3s after the rim, the shooter for 0.6s (FIBA: lane players may move
 //      from ball release already passed in phase 1's own clock; what they're
 //      actually waiting out here is their own reaction time to the rim hit).
-//   3. ATTACKERS chase, DEFENDERS mirror (t >= a player's own start time) —
-//      see ATTACKER CHASE and DEFENDER MIRRORING below. Processed in a
-//      different order than phases 1/2: every step, ALL attackers move
-//      first (PLAYERS order), THEN all defenders (PLAYERS order) — so a
-//      defender's mirroring reacts to his attacker's brand-new position from
-//      the very same step, not last step's.
+//   3. ATTACKER CHASE + SIDE-SHUFFLE, DEFENDER SYNC (t >= a player's own
+//      start time) — see below. Processed in a different order than phases
+//      1/2: every step, ALL attackers move first (PLAYERS order), THEN all
+//      defenders (PLAYERS order) — so a defender's sync copy reads his
+//      attacker's brand-new displacement from the very same step, not last
+//      step's.
 //
 // Collisions apply in every phase: two players' centres never close to less
 // than 2*PLAYER_RADIUS_M, and every player's step is checked against every
 // other player.
 //
-// ATTACKER CHASE (phase 3, O_L/O_R/SHOOTER only): go-around capable — a
-// straight-line stop-at-contact step can leave an attacker stuck behind a
-// blocker forever, so attackerChaseStep() slides around one instead, via the
-// shared slideStep() primitive (see its own comment for the geometry —
-// contact circle, locked rotation side, release condition). Re-aimed at the
-// ball's CURRENT floor point every step, never its future one.
+// ATTACKER CHASE + SIDE-SHUFFLE (phase 3, O_L/O_R/SHOOTER only) — replaces
+// the earlier two models tried here: letting attackers (and, briefly,
+// defenders) arc-slide around a blocker on a locked rotational side
+// occasionally fell into a sustained mutual-circling deadlock once two
+// players' targets nearly coincided (measured: up to 588.7° swept around a
+// single blocker in one case). attackerChaseStep() never arcs: every step,
+// try the straight line toward the ball's CURRENT floor point B (re-aimed
+// every step, never predicted); if that's clear, take it. If a player X
+// blocks it, shuffle straight SIDEWAYS instead — perpendicular to the
+// attacker→X line, toward whichever side B is actually offset to (by the
+// sign of a 2D cross product), capped at the perpendicular distance from B
+// to that line (so the shuffle doesn't overshoot past alignment) and at
+// ordinary blocked-stop distance against everyone else. If B is (within
+// 1cm) already on the attacker→X line, there's no sideways offset to close
+// — the attacker just pushes in place this step (zero displacement; still
+// "in contact," still an obstacle for anyone else's own collision check).
+// No arc, no locked rotational side, no persistent per-player state at all.
 //
-// DEFENDER MIRRORING (phase 3, D_L/D_R/D_3 only) — replaces the old
-// "defenders chase the ball too" model, which let a defender's own chase
-// slide around its paired attacker and, when the ball settled near the rim
-// where two players' targets nearly coincide, occasionally fall into a
-// sustained mutual-circling deadlock with whoever else was converging on the
-// same spot (measured: 20.6% of qualifying shots swept >180° around the same
-// blocker at least once, worst case 588.7°). Defenders here NEVER slide —
-// blocked, they just shorten the step and stop (moveToward, same primitive
-// attackerBoxoutStep always used) — so that failure mode is structurally
-// impossible for them. Two sub-phases, by ball height, never revisited once
-// past:
-//   - GUARD (defender's own reaction end <= t < tCatchable, this shot's
-//     first post-tRim moment the ball's height drops to <= standing-reach
-//     catch height): target = the point exactly MIN_SEPARATION_M from the
-//     PAIRED ATTACKER's current centre, on the line toward the ball's
-//     current floor point — i.e. directly between attacker and ball, bodies
-//     touching. Re-aimed every step from both the attacker's and the ball's
-//     CURRENT positions, never predicted. "Stays in front despite the
-//     attacker trying to slide past", "doesn't retreat toward the ball
-//     himself", and "can't get in front if the attacker's already past him"
-//     are NOT special-cased anywhere below — they fall straight out of
-//     recomputing this one target every step and moving toward it with the
-//     ordinary blocked-stop primitive.
-//   - BALL (t >= tCatchable, permanently): target = the ball's current floor
-//     point directly, same as an attacker's chase target, just without the
-//     sliding.
+// DEFENDER SYNC (phase 3, D_L/D_R/D_3 only) — replaces the earlier "defender
+// mirrors a point on the attacker's own contact circle" model, which froze:
+// once a defender is already touching his attacker (which Phase 1's box-out
+// always ends at), ANY new target also on that same circle makes the
+// straight chord to it dip fractionally inside the circle, so the ordinary
+// stop-at-contact collision math caps the step at exactly zero, forever.
+// Defenders here never aim at a point at all while guarding — they simply
+// COPY their paired attacker's own just-computed displacement this step
+// (same direction, same distance; shortened at contact if copying it would
+// overlap someone — the pair can then separate, and this defender keeps
+// copying deltas afterwards regardless). This keeps a defender's position
+// RELATIVE TO HIS ATTACKER frozen from wherever box-out left it — directly
+// in front — without ever needing to aim at a specific point on a circle,
+// so the freeze above is structurally impossible: copying a vector is never
+// "blocked by the very thing the vector was aimed at." Two sub-phases, by
+// ball height, never revisited once past:
+//   - SYNC (defender's own reaction end <= t < tCatchable, this shot's first
+//     post-tRim moment the ball's height drops to <= standing-reach catch
+//     height): copy the paired attacker's delta, as above. D_3's attacker is
+//     the shooter, frozen until tRim + SHOOTER_RECOVERY_S on top of
+//     REACTION_S — so D_3 (whose own reaction already ended at tRim +
+//     REACTION_S) stands still until then too, copying a zero vector.
+//   - BALL (t >= tCatchable, permanently): straight at the ball's current
+//     floor point, stop at contact — same primitive as phase 1's attackers,
+//     no sliding.
+// "Stays in front despite the attacker trying to get past", "doesn't retreat
+// toward the ball himself", and "if the attacker runs away the defender goes
+// with him but can't get in front" are NOT special-cased anywhere below —
+// they fall straight out of copying the attacker's own displacement and
+// moving by the ordinary blocked-stop primitive.
 //
 // OUT OF BOUNDS (FIBA Official Basketball Rules 2026, Article 23; see
 // isPointOut/isPlayerOut below for the exact boundary + player tests):
@@ -89,22 +105,21 @@ const MOVEMENT_MAX_AFTER_RIM_S = 10; // safety cap — stop looking for a catch 
 const MIN_SEPARATION_M = 2 * PLAYER_RADIUS_M; // 0.517 m — two players' centres never close nearer than this
 const FRAME_STRIDE_STEPS = 2; // store every 2 steps (0.01 s) — see MOVEMENT_DT_S
 // Float slack before counting a distance as an actual violation. Two
-// players converging on the same point from opposite sides (e.g. O_L/O_R
-// both chasing the same ball floor-point, or a sliding attacker and a
-// stop-at-contact defender) settle into a stable equilibrium a fraction of a
-// millimetre short of exactly MIN_SEPARATION_M — two independent per-tick
-// collision-cap computations, each referencing the other's position from a
-// slightly different instant, don't converge to bit-identical results. This
-// is benign numerical settling, not drift (confirmed stable across many
-// consecutive ticks, never growing): a scan of 4,075 rim-touching shots
-// across the sweep's full angle/aim/speed range found a worst case of
-// ~2.4e-4 m (0.24mm). 1e-3 m (1mm) gives that a ~4x safety margin — still
-// three orders of magnitude tighter than the metres-scale displacement a
-// genuine logic bug in this file has produced during development, and far
-// too small to be visible against a 0.2585m player radius.
+// players converging on the same point from opposite sides settle into a
+// stable equilibrium a fraction of a millimetre short of exactly
+// MIN_SEPARATION_M — two independent per-tick collision-cap computations,
+// each referencing the other's position from a slightly different instant,
+// don't converge to bit-identical results. This is benign numerical
+// settling, not drift (confirmed stable across many consecutive ticks, never
+// growing): a scan of 4,075 rim-touching shots across the sweep's full
+// angle/aim/speed range found a worst case of ~2.4e-4 m (0.24mm). 1e-3 m
+// (1mm) gives that a ~4x safety margin — still three orders of magnitude
+// tighter than the metres-scale displacement a genuine logic bug in this
+// file has produced during development, and far too small to be visible
+// against a 0.2585m player radius.
 const OVERLAP_EPSILON_M = 1e-3;
 const TIE_EPSILON_M = 1e-6; // float slack for "exactly equal" catch distances
-const BALL_AT_ATTACKER_EPSILON_M = 1e-6; // "ball's floor point within 1e-6m of the attacker's centre" — DEFENDER MIRRORING's degenerate case
+const SHUFFLE_PUSH_THRESHOLD_M = 0.01; // ATTACKER CHASE's "lateral offset < 1cm → push in place, don't shuffle"
 
 export interface MovementResult {
   winnerTeam: Team | "tie" | "out" | "none";
@@ -131,6 +146,14 @@ function emptyResult(): MovementResult {
     frames: new Float32Array(0),
     overlapViolations: 0,
   };
+}
+
+// Optional out-param for scripts/scratch verification only (e.g. "each
+// attacker's total sideways shuffle distance") — filled in at the same
+// moment, with the same values, the shuffle decision itself computes below.
+// Does not change MovementResult's own shape.
+export interface ShuffleDebug {
+  shuffleDistanceById: Record<string, number>;
 }
 
 type Vec2 = { x: number; z: number };
@@ -168,8 +191,8 @@ function makeBallSampler(trajectory: Float32Array) {
 // interpolated guess — the actual recorded samples) drops to or below
 // REBOUND_CATCH_HEIGHT_M, linearly interpolated between the two bracketing
 // samples for the crossing instant itself. Infinity if the recorded
-// trajectory never does (defenders then stay in GUARD mode for the whole
-// simulated window — see DEFENDER MIRRORING above).
+// trajectory never does (defenders then stay in SYNC mode for the whole
+// simulated window — see DEFENDER SYNC above).
 function computeTCatchable(trajectory: Float32Array, tRim: number): number {
   const sampleCount = trajectory.length / 4;
   let prevT: number | null = null;
@@ -290,8 +313,8 @@ function makeFloorOutOfBoundsScanner(trajectory: Float32Array) {
 // the target), shortened if needed so every blocker in `blockers` stays at
 // least MIN_SEPARATION_M away. No sliding/routing around a blocker — a
 // blocked player simply stops at contact. Used by: attackerBoxoutStep
-// (phase 1), and every defender in phase 3 (GUARD and BALL mode alike — see
-// this file's header: defenders never slide any more).
+// (phase 1), defenderSyncStep (copying a delta is "move toward cur+delta,
+// capped at |delta|"), and defenderChaseStep's BALL mode.
 function moveToward(cur: Vec2, target: Vec2, maxDist: number, blockers: Vec2[]): Vec2 {
   const dx = target.x - cur.x;
   const dz = target.z - cur.z;
@@ -313,10 +336,7 @@ function pairedAttackerId(defenderId: string): string {
 
 // Defender's box-out target: the point exactly MIN_SEPARATION_M from the
 // paired attacker's CURRENT centre, on the line toward the rim (0,0) — i.e.
-// touching distance, between the attacker and the basket. Also reused as
-// DEFENDER MIRRORING's degenerate-case fallback (ball sitting exactly on the
-// attacker with no prior GUARD target yet to fall back on) — see
-// guardTargetFor below.
+// touching distance, between the attacker and the basket. Phase 1 only.
 function defenderBoxoutTarget(attackerPos: Vec2): Vec2 {
   const dx = -attackerPos.x;
   const dz = -attackerPos.z;
@@ -325,36 +345,11 @@ function defenderBoxoutTarget(attackerPos: Vec2): Vec2 {
   return { x: attackerPos.x + (dx / dist) * MIN_SEPARATION_M, z: attackerPos.z + (dz / dist) * MIN_SEPARATION_M };
 }
 
-// DEFENDER MIRRORING's GUARD-mode target: the point exactly MIN_SEPARATION_M
-// from the paired attacker's CURRENT centre, on the line toward the ball's
-// CURRENT floor point — directly between attacker and ball. If the ball's
-// floor point is (within float noise) exactly on the attacker's centre,
-// there's no direction to place the target along, so the spec says keep
-// whatever target was last used; `prevTarget` is null only on a defender's
-// very first GUARD-mode tick (before any target has ever been computed),
-// which this falls back to defenderBoxoutTarget's own rim-ward direction for
-// — an arbitrary but deterministic choice for an astronomically unlikely
-// coincidence.
-function guardTargetFor(attackerPos: Vec2, ballXZ: Vec2, prevTarget: Vec2 | null): Vec2 {
-  const toBall: Vec2 = { x: ballXZ.x - attackerPos.x, z: ballXZ.z - attackerPos.z };
-  const toBallLen = Math.hypot(toBall.x, toBall.z);
-  if (toBallLen < BALL_AT_ATTACKER_EPSILON_M) {
-    return prevTarget ?? defenderBoxoutTarget(attackerPos);
-  }
-  return {
-    x: attackerPos.x + (toBall.x / toBallLen) * MIN_SEPARATION_M,
-    z: attackerPos.z + (toBall.z / toBallLen) * MIN_SEPARATION_M,
-  };
-}
-
 // ---------------------------------------------------------------------------
-// GO-AROUND (sliding) — ATTACKERS ONLY now (phase 1 defenders during
-// box-out, and phase 3 attackers during their chase; see this file's
-// header). One SlideState per player, reused SEQUENTIALLY across however
-// many phases that player slides in — a defender slides in phase 1
-// (box-out) only; an attacker slides in phase 3 (chase) only; neither
-// crosses into the other's territory, so there's no reset-on-handoff to
-// worry about any more (unlike the old defender-also-chases model).
+// GO-AROUND (sliding) — PHASE 1 DEFENDERS ONLY now (box-out). Phase 3 no
+// longer uses this for anyone — see this file's header for why (the
+// mutual-circling deadlock) and what replaced it (ATTACKER CHASE +
+// SIDE-SHUFFLE, DEFENDER SYNC).
 // ---------------------------------------------------------------------------
 interface SlideState {
   blockerIdx: number | null;
@@ -431,18 +426,17 @@ function chooseSlideSide(cur: Vec2, center: Vec2, target: Vec2): 1 | -1 {
   return ccwTotal <= cwTotal ? 1 : -1;
 }
 
-// The shared sliding primitive (used by phase 1 defenders and phase 3
-// attackers — see this file's header): moves `cur` along the contact circle
-// (centre = blocker, radius = MIN_SEPARATION_M) by up to `maxDist` of arc, in
-// the locked `side` direction. Steps along the tangent at the current angle,
-// then re-projects back onto the circle, so centre distance from `blocker`
-// stays exactly MIN_SEPARATION_M every step (never drifts in or out). If the
-// tangent step would bring `cur` within MIN_SEPARATION_M of a DIFFERENT
-// player in `otherBlockerIdx`/`pos`, the step is shortened (the short
-// tangent segment is treated as its own chord for this check — accurate to
-// O(step^2), negligible at this step's actual size) to the first such
-// contact, and that player's index is returned as `interruptedBy` so the
-// caller can switch the lock to them.
+// The shared sliding primitive (PHASE 1 DEFENDERS ONLY now): moves `cur`
+// along the contact circle (centre = blocker, radius = MIN_SEPARATION_M) by
+// up to `maxDist` of arc, in the locked `side` direction. Steps along the
+// tangent at the current angle, then re-projects back onto the circle, so
+// centre distance from `blocker` stays exactly MIN_SEPARATION_M every step
+// (never drifts in or out). If the tangent step would bring `cur` within
+// MIN_SEPARATION_M of a DIFFERENT player in `otherBlockerIdx`/`pos`, the
+// step is shortened (the short tangent segment is treated as its own chord
+// for this check — accurate to O(step^2), negligible at this step's actual
+// size) to the first such contact, and that player's index is returned as
+// `interruptedBy` so the caller can switch the lock to them.
 function slideStep(
   cur: Vec2,
   blocker: Vec2,
@@ -490,19 +484,19 @@ function slideStep(
   return { pos: newPos, interruptedBy };
 }
 
-// Shared orchestration for every go-around call site (phase 1 defenders,
-// phase 3 attackers). EVERY step, first checks whether a straight line at
-// `target` (up to this step's distance) is clear of EVERYONE in
-// `blockerIdx` — not just whatever's currently locked. This single check
-// does double duty: it's the normal "try a direct step" path when nothing is
-// locked, AND it's the release condition for an active lock (checking
-// against everyone, not only the locked blocker, is a strictly stronger and
-// more robust release test — relying on just the locked blocker's own
-// near-tangent math is numerically fragile exactly when, as is typical here,
-// `target` sits ON that blocker's own circle, so the "clear" segment to it
-// is vanishingly short). If something blocks: already locked onto that same
-// thing → keep sliding, side unchanged; otherwise (freshly blocked, or
-// blocked by someone new) → lock onto it and choose a side now.
+// Shared orchestration for the one remaining go-around call site (PHASE 1
+// DEFENDERS). EVERY step, first checks whether a straight line at `target`
+// (up to this step's distance) is clear of EVERYONE in `blockerIdx` — not
+// just whatever's currently locked. This single check does double duty:
+// it's the normal "try a direct step" path when nothing is locked, AND it's
+// the release condition for an active lock (checking against everyone, not
+// only the locked blocker, is a strictly stronger and more robust release
+// test — relying on just the locked blocker's own near-tangent math is
+// numerically fragile exactly when, as is typical here, `target` sits ON
+// that blocker's own circle, so the "clear" segment to it is vanishingly
+// short). If something blocks: already locked onto that same thing → keep
+// sliding, side unchanged; otherwise (freshly blocked, or blocked by someone
+// new) → lock onto it and choose a side now.
 function moveWithSliding(
   cur: Vec2,
   target: Vec2,
@@ -623,18 +617,117 @@ function defenderBoxoutStep(cur: Vec2, attackerPos: Vec2, blockerIdx: number[], 
   return moveWithSliding(cur, defenderBoxoutTarget(attackerPos), PLAYER_SPEED_MPS * MOVEMENT_DT_S, blockerIdx, pos, slideState);
 }
 
-// ATTACKERS O_L/O_R/SHOOTER, phase 3: go-around capable, toward the ball's
-// current floor point — see moveWithSliding. Defenders never call this any
-// more (see DEFENDER MIRRORING in this file's header).
-function attackerChaseStep(cur: Vec2, ballXZ: Vec2, blockerIdx: number[], pos: Vec2[], slideState: SlideState): Vec2 {
-  return moveWithSliding(cur, ballXZ, PLAYER_SPEED_MPS * MOVEMENT_DT_S, blockerIdx, pos, slideState);
+// ATTACKERS O_L/O_R/SHOOTER, phase 3 — see this file's header (ATTACKER
+// CHASE + SIDE-SHUFFLE). Never slides/arcs. Returns both the resulting
+// position AND the actual displacement this step (`delta`) — paired
+// defenders in the SAME tick copy exactly this vector (see DEFENDER SYNC).
+function attackerChaseStep(
+  cur: Vec2,
+  ballXZ: Vec2,
+  blockerIdx: number[],
+  pos: Vec2[],
+): { pos: Vec2; delta: Vec2; shuffleDist: number } {
+  const maxDist = PLAYER_SPEED_MPS * MOVEMENT_DT_S;
+  const dx = ballXZ.x - cur.x;
+  const dz = ballXZ.z - cur.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist < 1e-9) return { pos: { x: cur.x, z: cur.z }, delta: { x: 0, z: 0 }, shuffleDist: 0 }; // already standing on B
+
+  const dir: Vec2 = { x: dx / dist, z: dz / dist };
+  const desired = Math.min(maxDist, dist);
+
+  let minCap = Infinity;
+  let blockingIdx: number | null = null;
+  for (const i of blockerIdx) {
+    const cap = maxStepBeforeCollision(cur, dir, pos[i]);
+    if (cap < minCap) {
+      minCap = cap;
+      blockingIdx = i;
+    }
+  }
+
+  if (blockingIdx === null || minCap >= desired) {
+    // Clear path straight at B.
+    const newPos: Vec2 = { x: cur.x + dir.x * desired, z: cur.z + dir.z * desired };
+    return { pos: newPos, delta: { x: newPos.x - cur.x, z: newPos.z - cur.z }, shuffleDist: 0 };
+  }
+
+  // Blocked by X = pos[blockingIdx] — shuffle sideways instead of stopping.
+  const X = pos[blockingIdx];
+  const toX: Vec2 = { x: X.x - cur.x, z: X.z - cur.z }; // attacker -> X
+  const toB: Vec2 = { x: ballXZ.x - cur.x, z: ballXZ.z - cur.z }; // attacker -> B
+  const toXLen = Math.hypot(toX.x, toX.z);
+  // 2D cross product (z-component, treating (x,z) as the plane): its sign
+  // says which side of the attacker->X line B is on; its magnitude divided
+  // by |toX| is B's perpendicular distance from that line (the "lateral
+  // offset" to close).
+  const cross = toX.x * toB.z - toX.z * toB.x;
+  const lateralOffset = toXLen > 1e-9 ? Math.abs(cross) / toXLen : 0;
+
+  if (lateralOffset < SHUFFLE_PUSH_THRESHOLD_M) {
+    // B is (within 1cm) already on the attacker->X line — no sideways
+    // offset to close. Push in place: zero displacement this step, but
+    // still "in contact" for everyone else's own collision check.
+    return { pos: { x: cur.x, z: cur.z }, delta: { x: 0, z: 0 }, shuffleDist: 0 };
+  }
+
+  // Perpendicular to toX, rotated toward whichever side B is actually on.
+  const l: Vec2 =
+    cross > 0 ? { x: -toX.z / toXLen, z: toX.x / toXLen } : { x: toX.z / toXLen, z: -toX.x / toXLen };
+
+  // The shuffle direction `l` is, by construction, tangent to X's own
+  // contact circle at `cur`'s CURRENT position on it — exactly like
+  // slideStep's own tangent step (see that function's comment), this is
+  // numerically fragile against X specifically: `cur` sits at (within float
+  // noise) exactly MIN_SEPARATION_M from X already, so the ordinary
+  // ray-vs-circle cap check, which is sensitive to that exact boundary,
+  // returns a cap of 0 against X almost every time (float residual in the
+  // "tangent" direction reads as "already closing the gap") — freezing the
+  // shuffle completely, the very same degeneracy an earlier version of this
+  // file hit by aiming a non-sliding step at a point on a blocker's own
+  // circle. Checked against everyone ELSE, same as slideStep's
+  // otherBlockerIdx.
+  const shuffleDesired = Math.min(maxDist, lateralOffset); // "do not overshoot zero lateral offset"
+  let shuffleCap = shuffleDesired;
+  for (const i of blockerIdx) {
+    if (i === blockingIdx) continue;
+    const cap = maxStepBeforeCollision(cur, l, pos[i]);
+    if (cap < shuffleCap) shuffleCap = cap;
+  }
+  shuffleCap = Math.max(0, shuffleCap);
+  const newPos: Vec2 = { x: cur.x + l.x * shuffleCap, z: cur.z + l.z * shuffleCap };
+  return { pos: newPos, delta: { x: newPos.x - cur.x, z: newPos.z - cur.z }, shuffleDist: shuffleCap };
+}
+
+// DEFENDERS, phase 3, SYNC mode (own reaction end <= t < tCatchable) — see
+// this file's header. Moves `cur` by exactly `delta` (the paired attacker's
+// own just-computed displacement this same step), shortened at contact if
+// that would overlap someone. `moveToward` toward cur+delta, capped at
+// exactly |delta|, does precisely this — "move by this vector, capped at
+// collision" is the same operation as "move toward this point, capped at
+// collision" when the cap distance equals the vector's own length.
+function defenderSyncStep(cur: Vec2, delta: Vec2, blockers: Vec2[]): Vec2 {
+  const dist = Math.hypot(delta.x, delta.z);
+  if (dist < 1e-9) return { x: cur.x, z: cur.z };
+  const target: Vec2 = { x: cur.x + delta.x, z: cur.z + delta.z };
+  return moveToward(cur, target, dist, blockers);
+}
+
+// DEFENDERS, phase 3, BALL mode (t >= tCatchable, permanently) — see this
+// file's header. Straight at the ball's current floor point, stop at
+// contact, never slides/arcs.
+function defenderChaseStep(cur: Vec2, ballXZ: Vec2, blockers: Vec2[]): Vec2 {
+  return moveToward(cur, ballXZ, PLAYER_SPEED_MPS * MOVEMENT_DT_S, blockers);
 }
 
 function startTimeFor(playerId: string, tRim: number): number {
   return playerId === "SHOOTER" ? tRim + REACTION_S + SHOOTER_RECOVERY_S : tRim + REACTION_S;
 }
 
-export function simulateRebound(result: ShotResult): MovementResult {
+export function simulateRebound(result: ShotResult, debugOut?: ShuffleDebug): MovementResult {
+  if (debugOut) {
+    for (const p of PLAYERS) debugOut.shuffleDistanceById[p.id] = 0;
+  }
   if (result.rimContacts === 0 || result.outcome === "made" || result.firstRimContactTime === null) {
     return emptyResult();
   }
@@ -654,14 +747,16 @@ export function simulateRebound(result: ShotResult): MovementResult {
   const allOtherPositions = (idx: number): Vec2[] => otherPositions(idx, [...defenderIdx, ...attackerIdx]);
   const allOtherIdx = (idx: number): number[] => [...defenderIdx, ...attackerIdx].filter((i) => i !== idx);
 
-  // One slide lock per ATTACKER only now (phase 3) — see this file's GO-AROUND
-  // header comment. Defenders never slide in phase 3, so their slot here is
-  // allocated but never touched past phase 1.
+  // One slide lock per DEFENDER only now (phase 1 box-out) — see this file's
+  // GO-AROUND header comment. Attackers never slide any more (any phase), so
+  // their slots here are allocated but never touched.
   const slideStates: SlideState[] = PLAYERS.map(() => freshSlideState());
 
-  // DEFENDER MIRRORING's GUARD-mode "keep the previous target" memory — see
-  // guardTargetFor's own comment for when this is read.
-  const lastGuardTarget: (Vec2 | null)[] = PLAYERS.map(() => null);
+  // DEFENDER SYNC's per-tick read of "my paired attacker's displacement this
+  // same step" — reset to zero at the top of every tick, filled in by the
+  // attacker loop (which always runs first), read by the defender loop
+  // right after. See this file's header.
+  const attackerDeltaThisStep: Vec2[] = PLAYERS.map(() => ({ x: 0, z: 0 }));
 
   const scanFloorOutOfBounds = makeFloorOutOfBoundsScanner(result.trajectory);
 
@@ -707,32 +802,36 @@ export function simulateRebound(result: ShotResult): MovementResult {
         }
       }
     } else {
-      // PHASE 2 (reaction, implicit below) / PHASE 3: ATTACKERS move first
-      // (chase, sliding), THEN DEFENDERS (mirroring, no sliding) — so a
-      // defender's mirror target reacts to his attacker's brand-new position
-      // from this very step. See this file's header.
+      // PHASE 2 (reaction, implicit below) / PHASE 3: ALL attackers move
+      // first (chase + side-shuffle), THEN all defenders (sync copy / ball
+      // chase) — so a defender's sync copy reads his attacker's brand-new
+      // displacement from this very step. See this file's header.
+      for (const idx of attackerIdx) {
+        attackerDeltaThisStep[idx] = { x: 0, z: 0 }; // reset every tick; stays zero if still reacting
+      }
       for (const idx of attackerIdx) {
         const player = PLAYERS[idx];
         const myChaseStart = startTimeFor(player.id, tRim);
-        if (t < myChaseStart) continue; // still reacting — stay put
+        if (t < myChaseStart) continue; // still reacting — stay put, delta stays 0
         const ball = ballAt(t);
-        pos[idx] = attackerChaseStep(pos[idx], { x: ball.x, z: ball.z }, allOtherIdx(idx), pos, slideStates[idx]);
+        const { pos: newPos, delta, shuffleDist } = attackerChaseStep(pos[idx], { x: ball.x, z: ball.z }, allOtherIdx(idx), pos);
+        pos[idx] = newPos;
+        attackerDeltaThisStep[idx] = delta;
+        if (debugOut) debugOut.shuffleDistanceById[player.id] += shuffleDist;
       }
       for (const idx of defenderIdx) {
         const player = PLAYERS[idx];
         const myChaseStart = startTimeFor(player.id, tRim); // always tRim + REACTION_S — never SHOOTER
         if (t < myChaseStart) continue; // still reacting — stay put
 
-        const attackerPos = pos[idToIndex.get(pairedAttackerId(player.id))!];
-        const ball = ballAt(t);
-        let target: Vec2;
         if (t < tCatchable) {
-          target = guardTargetFor(attackerPos, { x: ball.x, z: ball.z }, lastGuardTarget[idx]);
-          lastGuardTarget[idx] = target;
+          const attackerPlayerIdx = idToIndex.get(pairedAttackerId(player.id))!;
+          const delta = attackerDeltaThisStep[attackerPlayerIdx];
+          pos[idx] = defenderSyncStep(pos[idx], delta, allOtherPositions(idx));
         } else {
-          target = { x: ball.x, z: ball.z }; // BALL mode, permanent — see this file's header
+          const ball = ballAt(t);
+          pos[idx] = defenderChaseStep(pos[idx], { x: ball.x, z: ball.z }, allOtherPositions(idx));
         }
-        pos[idx] = moveToward(pos[idx], target, PLAYER_SPEED_MPS * MOVEMENT_DT_S, allOtherPositions(idx));
       }
     }
 
