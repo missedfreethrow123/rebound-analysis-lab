@@ -17,11 +17,12 @@ export interface SweepGrid {
   nx: number;
   ny: number;
   cellSizeM: number;
-  counts: Uint32Array; // NX*NY, index iy*NX+ix — every recorded miss, regardless of whether it touched the rim
-  // Of counts[i], how many also had rimContacts > 0. Metadata, not a filter —
-  // the default map shows every recorded miss (counts); this is what a
-  // toggleable "rim contact" layer renders from in Phase 4, e.g. as
-  // rimTouchCounts[i]/counts[i] per cell, without needing a second sweep.
+  counts: Uint32Array; // NX*NY, index iy*NX+ix — every recorded rim-touching miss at its 2.44 m contest point (inside the court)
+  // Of counts[i], how many also had rimContacts > 0 — now always equal to
+  // counts[i], since every recorded point is already a rim-touching miss
+  // (the worker only ever passes touchedRim=true to recordSample). Kept as
+  // its own field rather than removed, in case a future population loosens
+  // that gate again.
   rimTouchCounts: Uint32Array;
   params: Float32Array; // NX*NY*4: [angleDeg, aimDeg, speed, spinRps] for the first recorded sample in that cell, NaN if never set
 }
@@ -114,10 +115,10 @@ export function mergeGrid(target: SweepGrid, targetEverSet: Uint8Array, delta: S
 }
 
 // Concatenates a worker's flat [x,z,x,z,...] delta of rebound-scatter points
-// (rim-touching, non-made landing spots — see sweep.worker.ts's recording
-// gate) onto the running total. Separate from the grid/counts above: those
-// stay a density histogram over every recorded miss regardless of rim
-// contact (still what the "Heat map stats" panel reads), while this is the
+// (rim-touching misses' 2.44 m contest points, inside the court — see
+// sweep.worker.ts's recording gate) onto the running total. Separate from
+// the grid/counts above: those stay a density histogram over the same
+// points (still what the "Heat map stats" panel reads), while this is the
 // exact-position list the scatter-dot renderer draws from.
 export function mergePoints(target: Float32Array, delta: Float32Array): Float32Array {
   if (delta.length === 0) return target;
@@ -131,9 +132,9 @@ export interface SweepTotals {
   totalShots: number;
   excludedMadeCount: number;
   rimTouchCount: number; // shots with rimContacts > 0, regardless of outcome or excludeMade
-  recordedCount: number; // shots actually added to the grid (excludes made-when-excluded and null record points)
-  nearSideCount: number; // recorded point on the shooter's side of the rim (z < 0)
-  farSideCount: number; // recorded point beyond the rim (z >= 0)
+  recordedCount: number; // shots actually added to the grid (excludes made-when-excluded, no-rim-contact, out-of-bounds, and off-grid contest points)
+  nearSideCount: number; // recorded shot's contest point on the shooter's side of the rim (z < 0)
+  farSideCount: number; // recorded shot's contest point beyond the rim (z >= 0)
   // Rebound-contest out-of-bounds count (src/rebound/contest.ts): touched
   // rim but landed outside the court, using the contest's own (looser)
   // inbounds test — real court bounds only, no backboard/under-hoop
@@ -180,7 +181,7 @@ export interface SweepStats {
   excludedMadeCount: number;
   rimTouchPercent: number; // 0-100, of totalShots
   hottestCell: { ix: number; iy: number; x: number; z: number; count: number } | null;
-  radius50PercentM: number | null; // smallest circle centred on the rim containing >=50% of recorded rebounds
+  radius50PercentM: number | null; // smallest circle centred on the rim containing >=50% of recorded contest points
   nearSideFraction: number | null; // 0-1, of recordedCount
   farSideFraction: number | null; // 0-1, of recordedCount
   // Rebound-contest out-of-bounds count — see SweepTotals's field comment.
@@ -209,8 +210,8 @@ export function computeStats(grid: SweepGrid, totals: SweepTotals): SweepStats {
   }
 
   // Radius of the smallest rim-centred circle containing >=50% of recorded
-  // rebounds: sort every non-empty cell by distance from the rim (0,0) and
-  // accumulate counts until crossing half of the recorded total.
+  // contest points: sort every non-empty cell by distance from the rim
+  // (0,0) and accumulate counts until crossing half of the recorded total.
   let radius50PercentM: number | null = null;
   if (totals.recordedCount > 0) {
     const entries: { dist: number; count: number }[] = [];

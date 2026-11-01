@@ -119,10 +119,10 @@ const SWEEP_AREA_DEPTH_M = 14;
 const HEATMAP_CENTER_Z = BASELINE_Z - SWEEP_AREA_DEPTH_M / 2;
 
 // Rebound scatter dots: flat, semi-transparent discs at each rim-touching
-// miss's landing point — see the [heatmap] effect below. Uniform colour and
-// opacity for every dot; density reads purely from dots overlapping, never
-// from per-instance colouring (that's the whole point of a scatter plot over
-// a density heat map).
+// miss's 2.44 m contest point — see the [heatmap] effect below. Uniform
+// colour and opacity for every dot; density reads purely from dots
+// overlapping, never from per-instance colouring (that's the whole point of
+// a scatter plot over a density heat map).
 const SCATTER_DOT_RADIUS_M = M(0.075); // ~0.5% of COURT_WIDTH_M (15m) — small enough to read as individual points, not blobs, even where many overlap
 const SCATTER_DOT_COLOR = 0x3b82c4;
 const SCATTER_DOT_Y = 0.02; // above the floor (0), key paint (0.002), and painted lines (0.004) — sits on top, like ink on the court
@@ -451,10 +451,10 @@ export default function FreeThrowSim({
   onLanding: (m: Marker) => void;
   markers: Marker[];
   onCanShootChange?: (canShoot: boolean) => void;
-  // Optional: when set, draws one flat scatter dot per landing point on the
-  // court floor. routes/index.tsx owns running the sweep and filtering to
-  // rim-touching misses — this component only knows how to draw whatever
-  // points it's given. `points` is flat [x,z,x,z,...] world coordinates.
+  // Optional: when set, draws one flat scatter dot per 2.44 m contest point
+  // (not the floor landing). routes/index.tsx owns running the sweep and
+  // filtering to rim-touching misses — this component only knows how to draw
+  // whatever points it's given. `points` is flat [x,z,x,z,...] world coordinates.
   heatmap?: { points: Float32Array; opacity: number } | null;
   // Whether the mobile bottom sheet (the controls panel — see routes/index.tsx)
   // is currently open. Only used in portrait, on phones, to keep the aim box

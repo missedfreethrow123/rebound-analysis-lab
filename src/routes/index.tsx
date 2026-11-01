@@ -74,10 +74,11 @@ function Index() {
   const [sweepGrid, setSweepGrid] = useState<SweepGrid | null>(null);
   const [sweepStats, setSweepStats] = useState<SweepStats | null>(null);
   const [sweepPoints, setSweepPoints] = useState<Float32Array | null>(null);
-  // Rebound-contest qualifying landing points (touched rim AND landed
-  // inbounds — src/rebound/contest.ts's own inbounds test, not the
-  // scatter-dot heat map's stricter landingValid). Kept separate from
-  // sweepPoints since the two win-eligible populations differ.
+  // Rebound-contest qualifying points: rim-touching misses' 2.44 m contest
+  // points that land inbounds (src/rebound/contest.ts's isInboundsLanding).
+  // Now the exact same population and points as sweepPoints — kept as a
+  // separate array only because contestSplit below needs it paired with
+  // contestFlightTimes, not because the two populations differ any more.
   const [contestPoints, setContestPoints] = useState<Float32Array | null>(null);
   // One entry per contestPoints point — see sweep.worker.ts's own comment;
   // the FIBA lane-player start time (ball release, not t_rim) varies with
@@ -442,8 +443,9 @@ function HeatmapCaption({ config, stats }: { config: SweepConfig; stats: SweepSt
   return (
     <div className="absolute bottom-3 left-3 right-3 lg:right-auto lg:max-w-md rounded-md border border-border bg-card/90 p-3 text-xs text-muted-foreground space-y-1 pointer-events-none">
       <div>
-        Shows where the ball first lands on the floor (not catch/chest height), for shots that touched the rim at
-        least once — clean swishes and airballs are excluded. Height {config.heightCm} cm · Backspin{" "}
+        Each dot marks where a rim-touching miss first comes down through 2.44 m (standing-reach height) after
+        hitting the rim — the point where players contest the ball in the air, not the floor landing. Made shots,
+        airballs and backboard-only misses are excluded. Height {config.heightCm} cm · Backspin{" "}
         {config.spinRps} rev/s · Angle {config.angle.min}–{config.angle.max}° (step {config.angle.step}°) · Aim{" "}
         {config.aim.min}–{config.aim.max}° (step {config.aim.step}°) · Speed {config.speed.min}–{config.speed.max}{" "}
         m/s (step {config.speed.step} m/s)

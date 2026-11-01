@@ -30,7 +30,7 @@ export interface SweepWorkerStartMessage {
   speedRange: RangeConfig;
   heightCm: number;
   spinRps: number;
-  record: "catchPoint" | "floorPoint";
+  record: "catchPoint" | "floorPoint"; // no longer read by the worker — kept so SweepConfig/sweepCacheKey still compile (sweepGrid.test.ts keys off it)
   excludeMade: boolean;
 }
 
@@ -46,17 +46,20 @@ export interface SweepWorkerOutboundMessage {
   grid: SweepGrid;
   totals: SweepTotals;
   shotsThisFlush: number;
-  // Flat [x,z,x,z,...] landing points for the scatter-dot renderer: the same
-  // recorded (excludeMade-gated) points as the grid above, further filtered
-  // to rimContacts > 0 — see the recording gate below.
+  // Flat [x,z,x,z,...] 2.44 m contest points for the scatter-dot renderer:
+  // rim-touching misses whose contest point (result.contestPoint — where the
+  // ball first comes down through REBOUND_CATCH_HEIGHT_M after the first rim
+  // contact) lands inside the court per isInboundsLanding. This is now
+  // exactly the same population and the same points as contestPoints below
+  // — see the recording gate below.
   points: Float32Array;
-  // Flat [x,z,x,z,...] landing points that QUALIFY for the rebound contest
-  // (touched rim AND landed inbounds — src/rebound/contest.ts's own,
-  // slightly looser inbounds test, not the stricter landingValid the
-  // scatter dots above use). Deliberately NOT pre-tallied into a win/loss
-  // count here: the actual contestLanding() call (and therefore who wins
-  // each point) happens on the main thread instead, keeping the pairing/
-  // eligibility logic in one place rather than duplicated into the worker.
+  // Flat [x,z,x,z,...] 2.44 m contest points that QUALIFY for the rebound
+  // contest (touched rim AND contest point landed inbounds per
+  // src/rebound/contest.ts's isInboundsLanding). Identical set to `points`
+  // above. Deliberately NOT pre-tallied into a win/loss count here: the
+  // actual contestLanding() call (and therefore who wins each point) happens
+  // on the main thread instead, keeping the pairing/eligibility logic in one
+  // place rather than duplicated into the worker.
   contestPoints: Float32Array;
   // One entry per contestPoints point (not per coordinate) — that shot's own
   // result.firstRimContactTime, i.e. contest.ts's releaseToRimS. The FIBA
@@ -153,42 +156,26 @@ function runSweep(msg: SweepWorkerStartMessage): void {
         if (result.rimContacts > 0) totals.rimTouchCount++;
 
         if (!(msg.excludeMade && isMade)) {
-          const point = msg.record === "catchPoint" ? result.catchPoint : result.floorPoint;
-          if (point) {
-            recordSample(grid, everSet, point[0], point[1], angleDeg, aimDeg, speed, msg.spinRps, result.rimContacts > 0);
-            totals.recordedCount++;
-            if (point[1] < 0) totals.nearSideCount++;
-            else totals.farSideCount++;
-            // Scatter-dot list: same GATING as before (touched rim + the
-            // floor landing was physically valid — result.landingValid is
-            // still computed against floorPoint, an unrelated physical-
-            // sanity check for backboard/under-hoop artifacts), but plotted
-            // at the rebound-contest point (standing-reach height, not the
-            // floor) instead of `point` — so a dot's position always
-            // matches the winner-map region it's sitting in. Guarded by a
-            // null check since contestPoint can (essentially never) be null
-            // — see core.ts's contestPointIsFallback.
-            const touchedRim = result.rimContacts > 0;
-            const isValidLanding = msg.record !== "floorPoint" || result.landingValid;
-            if (touchedRim && isValidLanding && result.contestPoint) {
-              scatterPoints.push(result.contestPoint[0], result.contestPoint[1]);
-            }
-          }
-
-          // Rebound-contest qualifying points (src/rebound/contest.ts):
-          // keyed off the CONTEST point (standing-reach height after rim
-          // contact — see core.ts's contestPoint/REBOUND_CATCH_HEIGHT_M),
-          // independent of `msg.record` (the scatter/grid recording above
-          // can be in catchPoint mode). Same rim-touch gate as the scatter
-          // dots; a made shot never gets here at all (this whole block is
-          // skipped when excludeMade+isMade) since a shot that goes in
-          // never produces a rebound to contest. Only the qualifying POINT
-          // is collected here, not a win/loss tally — see contestPoints'
-          // own comment above for why.
+          // ONE population for everything the heat map shows: a rim-touching
+          // miss, at its 2.44 m contest point (result.contestPoint — where
+          // the ball first comes down through REBOUND_CATCH_HEIGHT_M after
+          // the first rim contact), kept only if that point lands inside the
+          // court per src/rebound/contest.ts's isInboundsLanding. The grid
+          // (counts/stats), the scatter dots (`points`), and the rebound
+          // contest (`contestPoints`) are now all the exact same set of
+          // points — floorPoint/catchPoint/landingValid play no part here.
           if (result.rimContacts > 0 && result.contestPoint) {
             if (result.contestPointIsFallback) totals.contestCatchFallbackCount++;
-            if (isInboundsLanding(result.contestPoint[0], result.contestPoint[1])) {
-              contestPoints.push(result.contestPoint[0], result.contestPoint[1]);
+            const [cx, cz] = result.contestPoint;
+            if (isInboundsLanding(cx, cz)) {
+              const inGrid = recordSample(grid, everSet, cx, cz, angleDeg, aimDeg, speed, msg.spinRps, true);
+              if (inGrid) {
+                totals.recordedCount++;
+                if (cz < 0) totals.nearSideCount++;
+                else totals.farSideCount++;
+              }
+              scatterPoints.push(cx, cz);
+              contestPoints.push(cx, cz);
               // rimContacts > 0 guarantees firstRimContactTime is set — see
               // its own comment in core.ts.
               contestFlightTimes.push(result.firstRimContactTime!);
