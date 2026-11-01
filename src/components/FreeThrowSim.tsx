@@ -90,28 +90,19 @@ const HALF_COURT_Z = BASELINE_Z - HALF_COURT_LENGTH;
 
 // Rim/backboard (meters)
 const RIM_Y = M(RIM_HEIGHT_M);
-const RIM_RADIUS = M(RIM_RADIUS_M); // 45cm inner diameter (FIBA)
+const RIM_RADIUS = M(RIM_RADIUS_M); // rim tube centreline radius; inside diameter = 0.450 m (FIBA 2026)
 const RIM_TUBE = M(RIM_TUBE_RADIUS_M);
 const RIM_Z = 0; // rim center z (reference point)
 const BACKBOARD_Z = BASELINE_Z - BACKBOARD_FROM_BASELINE; // backboard front face
 const BACKBOARD_W = M(BACKBOARD_W_M);
 const BACKBOARD_H = M(BACKBOARD_H_M);
-const BACKBOARD_Y = RIM_Y + M(BACKBOARD_Y_ABOVE_RIM_M); // center (bottom edge sits 0.15m below rim: 2.90m)
+const BACKBOARD_Y = RIM_Y + M(BACKBOARD_Y_ABOVE_RIM_M); // center (bottom edge sits at 2.90m, FIBA)
 
 const BALL_R = M(BALL_RADIUS_M); // size 6-ish
 
-// Render-only: where the *decorative* near-baseline court markings (the
-// baseline itself, the key's baseline edge, the sidelines' baseline end, the
-// restricted-area's side lines, and the 3PT arc's baseline anchors) are drawn.
-// At the rulebook-accurate BASELINE_Z, the backboard/rim — correctly placed
-// relative to the physics baseline — still read as floating a long way past
-// a big stretch of bare floor beyond the key, because none of that floor is
-// covered by any court marking. None of these meshes are ever touched by
-// simulate()/collisions/the sweep grid (they're pure paint), so pulling them
-// in toward the hoop is free: it doesn't move the rim, backboard, ball, or
-// heat map at all, so nothing needs to "line up" with a shift — everything
-// that already lined up with the true rim still does, untouched.
-const VISUAL_BASELINE_Z = BACKBOARD_Z + 0.6;
+// The drawn baseline sits at the true FIBA position (1.575 m behind the rim
+// centre), the same as physics.
+const VISUAL_BASELINE_Z = BASELINE_Z;
 
 // The key's paint color: normal saturated blue for ordinary play, muted to a
 // neutral tone while the rebound scatter is showing (see the [heatmap]
@@ -808,12 +799,12 @@ export default function FreeThrowSim({
       raPts.push(new THREE.Vector3(Math.cos(a) * RESTRICTED_AREA_R, 0, -Math.sin(a) * RESTRICTED_AREA_R));
     }
     scene.add(paintLine(raPts, 0.05));
-    // short connectors from the restricted-area arc's open ends to the (visual) baseline
+    // 0.375 m connectors ending at the backboard plane, 1.20 m from the endline (FIBA)
     scene.add(paintLine([
-      new THREE.Vector3(-RESTRICTED_AREA_R, 0, 0), new THREE.Vector3(-RESTRICTED_AREA_R, 0, VISUAL_BASELINE_Z),
+      new THREE.Vector3(-RESTRICTED_AREA_R, 0, 0), new THREE.Vector3(-RESTRICTED_AREA_R, 0, BACKBOARD_Z),
     ], 0.05));
     scene.add(paintLine([
-      new THREE.Vector3(RESTRICTED_AREA_R, 0, 0), new THREE.Vector3(RESTRICTED_AREA_R, 0, VISUAL_BASELINE_Z),
+      new THREE.Vector3(RESTRICTED_AREA_R, 0, 0), new THREE.Vector3(RESTRICTED_AREA_R, 0, BACKBOARD_Z),
     ], 0.05));
 
     // Three-point line: constant-radius arc (THREE_PT_R) centered on the rim, all the

@@ -319,10 +319,10 @@ describe("Phase 2 physics", () => {
     // Not the default slider shot (angle 52, speed 7.5) — that one stopped
     // rattling in once RIM_RESTITUTION/BACKBOARD_RESTITUTION were bumped to
     // 0.8 (livelier bounces send it out instead). Re-picked again after
-    // backspin was removed (the 36/7.8 fixture no longer rattled in without
-    // Magnus lift); this one keeps the same rim-then-backboard-then-made
-    // shape with zero spin.
-    const result = simulate({ heightCm: 190, angleDeg: 36.5, aimDeg: 0, speed: 7.85, spinRps: 0 }, { recordTrajectory: false });
+    // Magnus lift was removed from flight (the 36.5/7.85 fixture no longer
+    // rattled in without it); this one keeps the same rim-then-backboard-
+    // then-made shape with zero spin.
+    const result = simulate({ heightCm: 190, angleDeg: 35, aimDeg: 0, speed: 7.85, spinRps: 0 }, { recordTrajectory: false });
     expect(result.outcome).toBe("made");
     expect(result.rimContacts).toBeGreaterThan(0);
     expect(result.catchPoint).not.toBeNull();

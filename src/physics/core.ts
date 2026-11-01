@@ -27,9 +27,6 @@ import {
   BALL_MASS_KG,
   BALL_RADIUS_M,
   BALL_INERTIA_KGM2,
-  MAGNUS_ACCEL_COEFF,
-  MAGNUS_LIFT_COEFF_MAX,
-  MAGNUS_LIFT_COEFF_SLOPE,
   BASELINE_TO_RIM_M,
   BACKBOARD_FROM_BASELINE_M,
   FT_LINE_Z_M,
@@ -397,35 +394,7 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
     const prevY = posY;
     const prevZ = posZ;
 
-    // Air drag removed entirely (was -DRAG_ACCEL_COEFF*|v|*v) — this sim now
-    // treats flight as drag-free, gravity + Magnus lift only. Magnus lift
-    // still scales with the ball's current speed, so it's skipped (a no-op
-    // either way) when it's at rest.
-    const speed = Math.hypot(velX, velY, velZ);
-    if (speed > 1e-9) {
-      // Magnus lift, using the CURRENT spin state — friction from a
-      // rim/backboard/floor contact can add spin to a ball launched with
-      // spinRps = 0, and that should start producing lift immediately after.
-      const spinMag = Math.hypot(spinX, spinY, spinZ);
-      if (spinMag > 1e-9) {
-        const spinRatio = (spinMag * BALL_RADIUS_M) / speed;
-        const liftCoeff = Math.min(MAGNUS_LIFT_COEFF_MAX, MAGNUS_LIFT_COEFF_SLOPE * spinRatio);
-        const vHatX = velX / speed;
-        const vHatY = velY / speed;
-        const vHatZ = velZ / speed;
-        const oHatX = spinX / spinMag;
-        const oHatY = spinY / spinMag;
-        const oHatZ = spinZ / spinMag;
-        // omega_hat x v_hat
-        const crossX = oHatY * vHatZ - oHatZ * vHatY;
-        const crossY = oHatZ * vHatX - oHatX * vHatZ;
-        const crossZ = oHatX * vHatY - oHatY * vHatX;
-        const magnusAccelMag = MAGNUS_ACCEL_COEFF * liftCoeff * speed * speed;
-        velX += magnusAccelMag * crossX * h;
-        velY += magnusAccelMag * crossY * h;
-        velZ += magnusAccelMag * crossZ * h;
-      }
-    }
+    // Flight is gravity-only — no air drag, no Magnus lift.
     velY += GRAVITY_MPS2 * h;
 
     posX += velX * h;

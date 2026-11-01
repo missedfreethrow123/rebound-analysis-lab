@@ -34,21 +34,6 @@ export const BALL_RADIUS_M = 0.12;
 // spin vs. linear velocity in the rim/backboard/floor collisions below.
 export const BALL_INERTIA_KGM2 = (2 / 3) * BALL_MASS_KG * BALL_RADIUS_M * BALL_RADIUS_M;
 
-export const AIR_DENSITY_KGM3 = 1.2;
-export const BALL_AREA_M2 = Math.PI * BALL_RADIUS_M * BALL_RADIUS_M;
-// Air drag (was F_drag = -0.5*rho*Cd*A*|v|*v, ~13% of the ball's weight at a
-// typical 7.5 m/s release) has been removed entirely — flight is now
-// drag-free (gravity + Magnus lift only). AIR_DENSITY_KGM3/BALL_AREA_M2 stay,
-// since Magnus lift below still uses them.
-
-// F_magnus = 0.5 * rho * Cl * A * |v|^2 * (omega_hat x v_hat), lift
-// coefficient Cl = min(0.25, 0.55*S) where S = spin_angular_speed * r / |v|
-// is the spin ratio. MAGNUS_ACCEL_COEFF is the constant part of a_magnus =
-// MAGNUS_ACCEL_COEFF * Cl * |v|^2 * (omega_hat x v_hat).
-export const MAGNUS_ACCEL_COEFF = (0.5 * AIR_DENSITY_KGM3 * BALL_AREA_M2) / BALL_MASS_KG;
-export const MAGNUS_LIFT_COEFF_MAX = 0.25;
-export const MAGNUS_LIFT_COEFF_SLOPE = 0.55; // Cl = min(MAGNUS_LIFT_COEFF_MAX, MAGNUS_LIFT_COEFF_SLOPE * S)
-
 // Court geometry (FIBA half-court), metres. The rim's floor projection is the
 // (x=0, z=0) reference point for every distance below.
 export const COURT_WIDTH_M = 15;
@@ -69,12 +54,12 @@ export const LANE_LENGTH_M = 5.8; // baseline to free-throw line
 // independently-sourced measurement.
 export const FT_LINE_Z_M = BASELINE_TO_RIM_M - LANE_LENGTH_M; // negative: behind the rim
 
-export const RIM_HEIGHT_M = 3.05;
-export const RIM_RADIUS_M = 0.2286; // 18in / 45.7cm inner diameter (FIBA/NBA regulation)
+export const RIM_HEIGHT_M = 3.041; // rim tube CENTRELINE height; top edge = 3.041 + 0.009 = 3.050 m (FIBA 2026 §1.2.4)
+export const RIM_RADIUS_M = 0.234; // rim tube CENTRELINE radius; inside diameter = 2*(0.234-0.009) = 0.450 m (FIBA 2026 §1.2.1); inside edge to backboard = 0.375-0.225 = 0.150 m (FIBA: 0.151 ± 0.002)
 export const RIM_TUBE_RADIUS_M = 0.009;
 export const BACKBOARD_W_M = 1.8;
 export const BACKBOARD_H_M = 1.05;
-export const BACKBOARD_Y_ABOVE_RIM_M = 0.375; // backboard center sits this far above rim height
+export const BACKBOARD_Y_ABOVE_RIM_M = 0.384; // keeps backboard bottom edge at 2.90 m: 3.041 + 0.384 - 1.05/2 = 2.900 (FIBA)
 
 export const FLOOR_RESTITUTION = 0.8; // measured directly (drop test), not the spec's 0.85 — see PHASE 2 note above
 export const RIM_RESTITUTION = 0.8; // measured directly, same convention as FLOOR_RESTITUTION — was 0.55
@@ -93,8 +78,8 @@ export const NET_DRAG_RATE = 40;
 // Backspin removed: every shot (single-shot and the sweep, until a spin
 // slider exists) now releases with zero spin. The ball can still pick up
 // spin later from rim/backboard/floor friction on a contact — that transfer
-// mechanism and the Magnus lift it feeds are untouched, only the shooter's
-// own release spin was taken out.
+// mechanism is untouched; flight itself is gravity-only (no Magnus lift),
+// so this residual spin has no effect on the ball's path through the air.
 export const DEFAULT_BACKSPIN_RPS = 0;
 
 // The shooter's height is fixed, not slider-driven: the "Player height"
