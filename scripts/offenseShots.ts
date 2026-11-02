@@ -25,7 +25,7 @@ import ExcelJS from "exceljs";
 
 import { simulate, type ShotResult } from "@/physics/core";
 import { SHOOTER_HEIGHT_CM, DEFAULT_BACKSPIN_RPS, REBOUND_CATCH_HEIGHT_M } from "@/physics/constants";
-import { DEFAULT_SWEEP_RANGES, expandRange, rangeStepCount } from "@/physics/sweepConfig";
+import { expandRange, rangeStepCount, type RangeConfig } from "@/physics/sweepConfig";
 import { simulateRebound } from "@/rebound/movement";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -47,18 +47,27 @@ if (!Number.isInteger(everyN) || everyN < 1) {
 }
 
 // ---------------------------------------------------------------------------
-// Config: EXACTLY reboundStats.ts's own grid (src/physics/sweepConfig.ts's
-// DEFAULT_SWEEP_RANGES — the app's desktop heat-map sweep), plus the fixed
-// shooter height and zero backspin the app now always uses.
+// Config: the full release-angle/horizontal-aim/power SLIDER ranges from
+// routes/index.tsx (20-80deg, -30-30deg, 4-12 m/s), not the app's own
+// (narrower) in-app heat-map sweep — this script's grid is deliberately
+// decoupled from src/physics/sweepConfig.ts's DEFAULT_SWEEP_RANGES, which
+// stays untouched. Same per-axis steps as the in-app sweep (angle 0.5deg,
+// aim 0.5deg, speed 0.05 m/s); every slider bound already lands exactly on
+// one of those steps, so no outward rounding was needed. Fixed shooter
+// height and zero backspin, same as the app now always uses.
 // ---------------------------------------------------------------------------
+const SWEEP_RANGES: { angle: RangeConfig; aim: RangeConfig; speed: RangeConfig } = {
+  angle: { min: 20, max: 80, step: 0.5 },
+  aim: { min: -30, max: 30, step: 0.5 },
+  speed: { min: 4, max: 12, step: 0.05 },
+};
 const HEIGHT_CM = SHOOTER_HEIGHT_CM;
 const SPIN_RPS = DEFAULT_BACKSPIN_RPS;
-const ANGLE_VALUES = expandRange(DEFAULT_SWEEP_RANGES.angle);
-const AIM_VALUES = expandRange(DEFAULT_SWEEP_RANGES.aim);
-const SPEED_VALUES = expandRange(DEFAULT_SWEEP_RANGES.speed);
+const ANGLE_VALUES = expandRange(SWEEP_RANGES.angle);
+const AIM_VALUES = expandRange(SWEEP_RANGES.aim);
+const SPEED_VALUES = expandRange(SWEEP_RANGES.speed);
 
-const TOTAL_SHOTS =
-  rangeStepCount(DEFAULT_SWEEP_RANGES.angle) * rangeStepCount(DEFAULT_SWEEP_RANGES.aim) * rangeStepCount(DEFAULT_SWEEP_RANGES.speed);
+const TOTAL_SHOTS = rangeStepCount(SWEEP_RANGES.angle) * rangeStepCount(SWEEP_RANGES.aim) * rangeStepCount(SWEEP_RANGES.speed);
 
 // ---------------------------------------------------------------------------
 // rimHitAngleDeg / rimSector
@@ -181,9 +190,9 @@ const offenseRimSectorCounts: Record<string, number> = {};
 
 console.log(`offense-shots analysis`);
 console.log(
-  `Grid: angle ${DEFAULT_SWEEP_RANGES.angle.min}-${DEFAULT_SWEEP_RANGES.angle.max} step ${DEFAULT_SWEEP_RANGES.angle.step} | ` +
-    `aim ${DEFAULT_SWEEP_RANGES.aim.min}-${DEFAULT_SWEEP_RANGES.aim.max} step ${DEFAULT_SWEEP_RANGES.aim.step} | ` +
-    `speed ${DEFAULT_SWEEP_RANGES.speed.min}-${DEFAULT_SWEEP_RANGES.speed.max} step ${DEFAULT_SWEEP_RANGES.speed.step} | ` +
+  `Grid: angle ${SWEEP_RANGES.angle.min}-${SWEEP_RANGES.angle.max} step ${SWEEP_RANGES.angle.step} | ` +
+    `aim ${SWEEP_RANGES.aim.min}-${SWEEP_RANGES.aim.max} step ${SWEEP_RANGES.aim.step} | ` +
+    `speed ${SWEEP_RANGES.speed.min}-${SWEEP_RANGES.speed.max} step ${SWEEP_RANGES.speed.step} | ` +
     `heightCm=${HEIGHT_CM} spinRps=${SPIN_RPS}`,
 );
 console.log(`Total shots: ${TOTAL_SHOTS.toLocaleString()}`);

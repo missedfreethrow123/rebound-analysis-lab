@@ -24,9 +24,9 @@
 import { COURT_WIDTH_M, HALF_COURT_LENGTH_M, BASELINE_TO_RIM_M } from "@/physics/constants";
 import { PLAYERS, type Team } from "./players";
 
-export const PLAYER_SPEED_MPS = 3.5;
-export const REACTION_S = 0.3; // everyone
-export const SHOOTER_RECOVERY_S = 0.3; // extra, shooter only — just released the shot
+export const PLAYER_SPEED_MPS = 4.3;
+export const REACTION_S = 0.28; // everyone
+export const SHOOTER_RECOVERY_S = 0.28; // extra, shooter only — just released the shot
 
 // START TIME (FIBA 2026):
 // - 44.2.4: lane players (the 3 defenders and the 2 non-shooter attackers in
