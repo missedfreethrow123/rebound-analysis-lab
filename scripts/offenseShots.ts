@@ -47,19 +47,22 @@ if (!Number.isInteger(everyN) || everyN < 1) {
 }
 
 // ---------------------------------------------------------------------------
-// Config: the full release-angle/horizontal-aim/power SLIDER ranges from
-// routes/index.tsx (20-80deg, -30-30deg, 4-12 m/s), not the app's own
-// (narrower) in-app heat-map sweep — this script's grid is deliberately
-// decoupled from src/physics/sweepConfig.ts's DEFAULT_SWEEP_RANGES, which
-// stays untouched. Same per-axis steps as the in-app sweep (angle 0.5deg,
-// aim 0.5deg, speed 0.05 m/s); every slider bound already lands exactly on
-// one of those steps, so no outward rounding was needed. Fixed shooter
-// height and zero backspin, same as the app now always uses.
+// Config: the full release-angle/horizontal-aim SLIDER ranges from
+// routes/index.tsx (20-80deg, -30-30deg), not the app's own (narrower)
+// in-app heat-map sweep — this script's grid is deliberately decoupled from
+// src/physics/sweepConfig.ts's DEFAULT_SWEEP_RANGES, which stays untouched.
+// Power/speed is capped at 9 m/s (not the slider's full 4-12 m/s) so only
+// shots that can actually change under the lodge-detection rule get
+// re-simulated — see scripts/output's own re-run notes. Same per-axis steps
+// as the in-app sweep (angle 0.5deg, aim 0.5deg, speed 0.05 m/s); every
+// bound already lands exactly on one of those steps, so no outward rounding
+// was needed. Fixed shooter height and zero backspin, same as the app now
+// always uses.
 // ---------------------------------------------------------------------------
 const SWEEP_RANGES: { angle: RangeConfig; aim: RangeConfig; speed: RangeConfig } = {
   angle: { min: 20, max: 80, step: 0.5 },
   aim: { min: -30, max: 30, step: 0.5 },
-  speed: { min: 4, max: 12, step: 0.05 },
+  speed: { min: 4, max: 9, step: 0.05 },
 };
 const HEIGHT_CM = SHOOTER_HEIGHT_CM;
 const SPIN_RPS = DEFAULT_BACKSPIN_RPS;
@@ -107,7 +110,7 @@ function rimHitAngleDegOf(x: number, z: number): number {
 }
 
 const RIM_SECTORS = ["front", "front-right", "right", "back-right", "back", "back-left", "left", "front-left"] as const;
-type RimSector = (typeof RIM_SECTORS)[number];
+export type RimSector = (typeof RIM_SECTORS)[number];
 function rimSectorOf(angleDeg: number): RimSector {
   // 8 sectors of 45°, centred ON 0/45/90/...: round to the nearest multiple
   // of 45°, then index into RIM_SECTORS (defined in the same +45°-per-step
@@ -143,6 +146,7 @@ interface BlockStats {
   no_rim: number;
   tie: number;
   none: number;
+  jump_ball: number;
   offenseRimSectorCounts: Map<string, number>;
 }
 const blocks = new Map<string, BlockStats>();
@@ -153,20 +157,27 @@ function blockKeyOf(angleFrom: number, aimFrom: number, speedFrom: number): stri
 // ---------------------------------------------------------------------------
 // Categorisation (FIBA, from the shooting team's point of view — see the
 // task spec this was built from):
-//   made     — outcome === "made" (1 point, but possession to the opponents)
-//   no_rim   — rimContacts === 0 && outcome !== "made" (free-throw
-//              violation, ball to the opponents: airballs AND
-//              backboard-only misses — note core.ts's own `outcome` string
-//              can read "backboard_miss" even when rimContacts > 0, since
-//              its if/else chain checks backboardHit before rimContacts; so
-//              this category is decided from rimContacts, never from the
-//              outcome string)
-//   offense/defense/out/tie/none — rimContacts > 0 && outcome !== "made":
-//              simulateRebound's own winnerTeam, used as-is.
+//   made      — outcome === "made" (1 point, but possession to the opponents)
+//   no_rim    — rimContacts === 0 && outcome !== "made" (free-throw
+//               violation, ball to the opponents: airballs AND
+//               backboard-only misses — note core.ts's own `outcome` string
+//               can read "backboard_miss" even when rimContacts > 0, since
+//               its if/else chain checks backboardHit before rimContacts; so
+//               this category is decided from rimContacts, never from the
+//               outcome string)
+//   jump_ball — rimContacts > 0 && outcome !== "made" && lodged === true
+//               (FIBA 2026 Art. 12.4: a live ball lodged between the ring
+//               and the backboard is a jump ball, not a rebound). Checked
+//               BEFORE the rebound-contest branch below — a lodged ball
+//               never gets a simulateRebound() call at all, since there is
+//               no rebound to contest. A valid missed free throw, but not
+//               offense.
+//   offense/defense/out/tie/none — rimContacts > 0 && outcome !== "made" &&
+//               !lodged: simulateRebound's own winnerTeam, used as-is.
 // ---------------------------------------------------------------------------
-type Category = "offense" | "defense" | "out" | "made" | "no_rim" | "tie" | "none";
+export type Category = "offense" | "defense" | "out" | "made" | "no_rim" | "tie" | "none" | "jump_ball";
 
-interface ShotRow {
+export interface ShotRow {
   angleDeg: number;
   aimDeg: number;
   speedMps: number;
@@ -184,7 +195,8 @@ interface ShotRow {
 const allShots: ShotRow[] = [];
 const offenseShots: ShotRow[] = [];
 
-const categoryCountsAll: Record<Category, number> = { offense: 0, defense: 0, out: 0, made: 0, no_rim: 0, tie: 0, none: 0 };
+const categoryCountsAll: Record<Category, number> = { offense: 0, defense: 0, out: 0, made: 0, no_rim: 0, tie: 0, none: 0, jump_ball: 0 };
+let madeButLodgedCount = 0; // reported separately — stays in category "made" per spec, never jump_ball
 const winnerIdCounts: Record<string, number> = {};
 const offenseRimSectorCounts: Record<string, number> = {};
 
@@ -198,6 +210,72 @@ console.log(
 console.log(`Total shots: ${TOTAL_SHOTS.toLocaleString()}`);
 if (everyN > 1) console.log(`--every ${everyN}: TEST RUN, not the full sweep (~${Math.ceil(TOTAL_SHOTS / everyN).toLocaleString()} shots)`);
 
+// Simulates one shot and categorises it (FIBA, see Category's own comment
+// above). Exported-shape so a separate re-run script can share EXACTLY this
+// logic against a subset of (angle, aim, speed) triples, rather than
+// duplicating it — see scripts/output's re-run notes for why that matters.
+export function simulateAndCategorize(
+  angleDeg: number,
+  aimDeg: number,
+  speed: number,
+): Omit<ShotRow, "angleDeg" | "aimDeg" | "speedMps"> & { madeButLodged: boolean } {
+  const cheap = simulate({ heightCm: HEIGHT_CM, angleDeg, aimDeg, speed, spinRps: SPIN_RPS }, { recordTrajectory: false });
+
+  let category: Category;
+  let rimHitAngleDeg: number | null = null;
+  let rimSector: RimSector | null = null;
+  let winnerId: string | null = null;
+  let catchX: number | null = null;
+  let catchZ: number | null = null;
+  let catchTime: number | null = null;
+  let catchHeight: number | null = null;
+  let outReason: "floor" | "player" | null = null;
+  let madeButLodged = false;
+
+  if (cheap.outcome === "made") {
+    category = "made";
+    if (cheap.lodged) madeButLodged = true; // stays "made" per spec — just tallied separately
+    if (cheap.rimContacts > 0) {
+      // Rim-and-in: still want rimHitAngleDeg, needs the trajectory.
+      const withTraj = simulate({ heightCm: HEIGHT_CM, angleDeg, aimDeg, speed, spinRps: SPIN_RPS }, { recordTrajectory: true });
+      const hit = nearestSample(withTraj.trajectory, withTraj.firstRimContactTime!);
+      rimHitAngleDeg = rimHitAngleDegOf(hit.x, hit.z);
+      rimSector = rimSectorOf(rimHitAngleDeg);
+    }
+  } else if (cheap.rimContacts === 0) {
+    category = "no_rim";
+  } else if (cheap.lodged) {
+    // FIBA 2026 Art. 12.4: lodged between ring and backboard — a jump
+    // ball, not a rebound. No simulateRebound() call: there is no
+    // rebound to contest, so winnerId/catch* all stay null. Still
+    // wants rimHitAngleDeg/rimSector for the output columns, same as
+    // the made-with-rim-contact branch above.
+    category = "jump_ball";
+    const withTraj = simulate({ heightCm: HEIGHT_CM, angleDeg, aimDeg, speed, spinRps: SPIN_RPS }, { recordTrajectory: true });
+    const hit = nearestSample(withTraj.trajectory, withTraj.firstRimContactTime!);
+    rimHitAngleDeg = rimHitAngleDegOf(hit.x, hit.z);
+    rimSector = rimSectorOf(rimHitAngleDeg);
+  } else {
+    const result: ShotResult = simulate({ heightCm: HEIGHT_CM, angleDeg, aimDeg, speed, spinRps: SPIN_RPS }, { recordTrajectory: true });
+    const hit = nearestSample(result.trajectory, result.firstRimContactTime!);
+    rimHitAngleDeg = rimHitAngleDegOf(hit.x, hit.z);
+    rimSector = rimSectorOf(rimHitAngleDeg);
+
+    const movement = simulateRebound(result);
+    category = movement.winnerTeam; // "offense" | "defense" | "tie" | "out" | "none" — matches Category 1:1
+    winnerId = movement.winnerId;
+    outReason = movement.outReason;
+    if (movement.catchTime !== null && movement.catchPoint !== null) {
+      catchTime = movement.catchTime;
+      catchX = movement.catchPoint.x;
+      catchZ = movement.catchPoint.z;
+      catchHeight = nearestSample(result.trajectory, movement.catchTime).y;
+    }
+  }
+
+  return { category, rimHitAngleDeg, rimSector, winnerId, catchX, catchZ, catchTime, catchHeight, outReason, madeButLodged };
+}
+
 const startWall = Date.now();
 let processed = 0;
 let lastPctPrinted = -1;
@@ -207,46 +285,9 @@ for (const angleDeg of ANGLE_VALUES) {
     for (const speed of SPEED_VALUES) {
       processed++;
       if ((processed - 1) % everyN === 0) {
-        const cheap = simulate({ heightCm: HEIGHT_CM, angleDeg, aimDeg, speed, spinRps: SPIN_RPS }, { recordTrajectory: false });
-
-        let category: Category;
-        let rimHitAngleDeg: number | null = null;
-        let rimSector: RimSector | null = null;
-        let winnerId: string | null = null;
-        let catchX: number | null = null;
-        let catchZ: number | null = null;
-        let catchTime: number | null = null;
-        let catchHeight: number | null = null;
-        let outReason: "floor" | "player" | null = null;
-
-        if (cheap.outcome === "made") {
-          category = "made";
-          if (cheap.rimContacts > 0) {
-            // Rim-and-in: still want rimHitAngleDeg, needs the trajectory.
-            const withTraj = simulate({ heightCm: HEIGHT_CM, angleDeg, aimDeg, speed, spinRps: SPIN_RPS }, { recordTrajectory: true });
-            const hit = nearestSample(withTraj.trajectory, withTraj.firstRimContactTime!);
-            rimHitAngleDeg = rimHitAngleDegOf(hit.x, hit.z);
-            rimSector = rimSectorOf(rimHitAngleDeg);
-          }
-        } else if (cheap.rimContacts === 0) {
-          category = "no_rim";
-        } else {
-          const result: ShotResult = simulate({ heightCm: HEIGHT_CM, angleDeg, aimDeg, speed, spinRps: SPIN_RPS }, { recordTrajectory: true });
-          const hit = nearestSample(result.trajectory, result.firstRimContactTime!);
-          rimHitAngleDeg = rimHitAngleDegOf(hit.x, hit.z);
-          rimSector = rimSectorOf(rimHitAngleDeg);
-
-          const movement = simulateRebound(result);
-          category = movement.winnerTeam; // "offense" | "defense" | "tie" | "out" | "none" — matches Category 1:1
-          winnerId = movement.winnerId;
-          outReason = movement.outReason;
-          if (movement.catchTime !== null && movement.catchPoint !== null) {
-            catchTime = movement.catchTime;
-            catchX = movement.catchPoint.x;
-            catchZ = movement.catchPoint.z;
-            catchHeight = nearestSample(result.trajectory, movement.catchTime).y;
-          }
-        }
+        const { madeButLodged, ...rest } = simulateAndCategorize(angleDeg, aimDeg, speed);
+        const { category, rimHitAngleDeg, rimSector, winnerId, catchX, catchZ, catchTime, catchHeight, outReason } = rest;
+        if (madeButLodged) madeButLodgedCount++;
 
         const row: ShotRow = {
           angleDeg,
@@ -284,6 +325,7 @@ for (const angleDeg of ANGLE_VALUES) {
             no_rim: 0,
             tie: 0,
             none: 0,
+            jump_ball: 0,
             offenseRimSectorCounts: new Map(),
           };
           blocks.set(bKey, b);
@@ -378,17 +420,22 @@ function pct(n: number, denom: number): string {
 }
 
 const totalAll = allShots.length;
-const rimTouchingMisses = categoryCountsAll.offense + categoryCountsAll.defense + categoryCountsAll.out + categoryCountsAll.tie + categoryCountsAll.none;
+// "Valid missed free throw" population (FIBA): touched the rim, not made —
+// includes jump_ball (FIBA 2026 Art. 12.4: a lodged ball is a jump ball, not
+// a rebound, but it's still a legal miss, not a violation).
+const rimTouchingMisses =
+  categoryCountsAll.offense + categoryCountsAll.defense + categoryCountsAll.out + categoryCountsAll.tie + categoryCountsAll.none + categoryCountsAll.jump_ball;
 
 console.log(`\n========== SUMMARY ==========`);
 console.log(`Total shots simulated: ${totalAll.toLocaleString()}`);
+console.log(`Made shots that were lodged first (still category "made"): ${madeButLodgedCount.toLocaleString()}`);
 console.log(`\nOutcome category, over ALL shots:`);
-for (const cat of ["offense", "defense", "out", "made", "no_rim", "tie", "none"] as Category[]) {
-  console.log(`  ${cat.padEnd(8)} ${categoryCountsAll[cat].toLocaleString().padStart(8)}  (${pct(categoryCountsAll[cat], totalAll)})`);
+for (const cat of ["offense", "defense", "out", "made", "no_rim", "tie", "none", "jump_ball"] as Category[]) {
+  console.log(`  ${cat.padEnd(10)} ${categoryCountsAll[cat].toLocaleString().padStart(8)}  (${pct(categoryCountsAll[cat], totalAll)})`);
 }
-console.log(`\nOutcome category, over rim-touching misses only (offense+defense+out+tie+none = ${rimTouchingMisses.toLocaleString()}):`);
-for (const cat of ["offense", "defense", "out", "tie", "none"] as Category[]) {
-  console.log(`  ${cat.padEnd(8)} ${categoryCountsAll[cat].toLocaleString().padStart(8)}  (${pct(categoryCountsAll[cat], rimTouchingMisses)})`);
+console.log(`\nOutcome category, over valid missed free throws only (offense+defense+out+tie+none+jump_ball = ${rimTouchingMisses.toLocaleString()}):`);
+for (const cat of ["offense", "defense", "out", "tie", "none", "jump_ball"] as Category[]) {
+  console.log(`  ${cat.padEnd(10)} ${categoryCountsAll[cat].toLocaleString().padStart(8)}  (${pct(categoryCountsAll[cat], rimTouchingMisses)})`);
 }
 
 if (offenseShots.length > 0) {

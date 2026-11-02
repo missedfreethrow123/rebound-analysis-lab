@@ -389,3 +389,40 @@ describe("rebound-contest point (standing-reach height, src/rebound)", () => {
     expect(fallbacks).toBe(0);
   }, 30000); // ~900 simulate() calls; this environment has shown severe, unexplained slowdowns elsewhere in this project's history, hence the generous timeout
 });
+
+describe("lodged (FIBA 2026 Art. 12.4 — ball lodges between ring and backboard)", () => {
+  it("a shot that genuinely rattles in the rim-backboard pocket for >= LODGE_MIN_S is lodged", () => {
+    // Found by scanning angle 60-80/aim -5-5/speed 4-9 for the longest
+    // continuous dwell in the rim-backboard pocket: this is the only
+    // combination in that scan exceeding LODGE_MIN_S (dwell ~4.1s, thousands
+    // of rim contacts) — a genuine multi-bounce rattle-and-stick, not a
+    // single graze. Steeper/slower neighbours (e.g. 72-75 deg at 7.8-8.2 m/s,
+    // the shapes originally suspected of lodging) turned out to only clip
+    // the pocket once for a few ms before continuing on, so they are NOT
+    // used here — see the investigation this test was built from.
+    const result = simulate({ heightCm: 190, angleDeg: 77, aimDeg: 0, speed: 8.4, spinRps: 0 }, { recordTrajectory: false });
+    expect(result.lodged).toBe(true);
+    expect(result.lodgedTime).not.toBeNull();
+    expect(result.rimContacts).toBeGreaterThan(0);
+  });
+
+  it("an ordinary single rim-front miss is not lodged", () => {
+    const result = simulate({ heightCm: 190, angleDeg: 50, aimDeg: 0, speed: 6.78, spinRps: 0 }, { recordTrajectory: false });
+    expect(result.lodged).toBe(false);
+    expect(result.lodgedTime).toBeNull();
+  });
+
+  it("a brief single graze through the rim-backboard pocket does not count as lodged", () => {
+    // (73, 0, 7.95): a steep short lob that falls short, bounces once off the
+    // floor almost directly under the hoop, then arcs back up and banks off
+    // the backboard once before grazing the rim's underside once more — the
+    // ball spends at most ~11ms continuously in the pocket, nowhere near
+    // LODGE_MIN_S. Guards against a detector that's too eager (e.g. counting
+    // total time in the pocket across multiple separate visits instead of
+    // the longest CONTINUOUS one).
+    const result = simulate({ heightCm: 190, angleDeg: 73, aimDeg: 0, speed: 7.95, spinRps: 0 }, { recordTrajectory: false });
+    expect(result.lodged).toBe(false);
+    expect(result.lodgedTime).toBeNull();
+    expect(result.rimContacts).toBeGreaterThan(0);
+  });
+});

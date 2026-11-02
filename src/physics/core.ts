@@ -59,6 +59,7 @@ import {
   TRAJECTORY_SAMPLE_INTERVAL_S,
   ROLLING_RESISTANCE_COEFF,
   ROLLING_CONTACT_EPSILON_M,
+  LODGE_MIN_S,
 } from "./constants";
 
 export interface ShotParams {
@@ -130,6 +131,18 @@ export interface ShotResult {
   // pathological input can't hang a sweep worker, and this flag makes it
   // visible if the cap is ever actually hit rather than failing silently.
   hitStepCap: boolean;
+
+  // FIBA 2026 Art. 12.4: a live ball that lodges between the ring and the
+  // backboard is a jump ball, not a rebound. True once the ball centre has
+  // stayed CONTINUOUSLY (no gap, even a single step outside resets the
+  // count) inside the rim-backboard pocket — z between RIM_RADIUS_M and the
+  // backboard's front face, |x| <= RIM_RADIUS_M, within 0.25m of
+  // RIM_HEIGHT_M in y — for at least LODGE_MIN_S, starting the clock no
+  // earlier than the first rim contact (see firstRimContactTime). Tracked
+  // purely alongside the existing integration; never alters the trajectory,
+  // bounces, or any other field. lodgedTime is null unless lodged is true.
+  lodged: boolean;
+  lodgedTime: number | null; // seconds from release when the LODGE_MIN_S threshold was first crossed
 }
 
 const RIM_Z_M = 0;
@@ -146,6 +159,15 @@ const BASELINE_Z_M = BASELINE_TO_RIM_M;
 // RIM_RADIUS_M (not an arbitrary distance) since anything closer than the
 // rim's own radius to dead-centre is inside the hoop assembly's own footprint.
 const UNDER_HOOP_EXCLUSION_RADIUS_M = RIM_RADIUS_M;
+
+// Rim-backboard pocket (FIBA 2026 Art. 12.4 — see LODGE_MIN_S): the ball
+// centre counts as "between the ring and the backboard" when it's behind the
+// rim's own back edge but still in front of the board's face, within the
+// ring's own radius laterally, and close to rim height vertically.
+const LODGE_Y_MARGIN_M = 0.25;
+function isInLodgePocket(x: number, y: number, z: number): boolean {
+  return z >= RIM_RADIUS_M && z <= BACKBOARD_Z_M && Math.abs(x) <= RIM_RADIUS_M && Math.abs(y - RIM_HEIGHT_M) <= LODGE_Y_MARGIN_M;
+}
 
 const WALL_X_MIN = -SIDELINE_X_M - WALL_MARGIN_X_M;
 const WALL_X_MAX = SIDELINE_X_M + WALL_MARGIN_X_M;
@@ -358,6 +380,17 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
   // null until (if ever) that first crossing happens; the fallback to
   // floorPoint is applied once, after the loop ends — see the return block.
   let reboundContestPoint: [number, number] | null = null;
+
+  // FIBA 2026 Art. 12.4 lodge tracking: lodgeRunStart is the time the ball
+  // most recently entered the rim-backboard pocket (see isInLodgePocket)
+  // without having left it since; null while outside the pocket. Reset to
+  // null on every step the ball is NOT in the pocket, so only a genuinely
+  // CONTINUOUS dwell can ever reach LODGE_MIN_S — a single brief graze
+  // through the pocket (common on steep short lobs) restarts the clock.
+  // Only armed from the first rim contact onward, per the field's own spec.
+  let lodgeRunStart: number | null = null;
+  let lodged = false;
+  let lodgedTime: number | null = null;
 
   let flying = true;
   let t = 0;
@@ -595,6 +628,23 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
       }
     }
 
+    // FIBA 2026 Art. 12.4 lodge tracking: only armed once the ball has
+    // actually touched the rim (firstRimContactTime set), checked against
+    // this step's exact post-integration position — not a decimated/sampled
+    // trajectory — so a dwell lasting less than one periodic sample interval
+    // still accumulates correctly.
+    if (!lodged && firstRimContactTime !== null) {
+      if (isInLodgePocket(posX, posY, posZ)) {
+        if (lodgeRunStart === null) lodgeRunStart = t;
+        if (t - lodgeRunStart >= LODGE_MIN_S) {
+          lodged = true;
+          lodgedTime = t;
+        }
+      } else {
+        lodgeRunStart = null;
+      }
+    }
+
     // Walls: containment box only, so a wild shot can't integrate forever —
     // NOT the real out-of-bounds lines (see the outcome classification below).
     // Also a genuine velocity discontinuity like the real collisions above, so
@@ -701,5 +751,7 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
     firstImpactTime,
     firstRimContactTime,
     hitStepCap,
+    lodged,
+    lodgedTime,
   };
 }

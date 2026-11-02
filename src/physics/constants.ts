@@ -69,6 +69,18 @@ export const FRICTION_RIM = 0.4;
 export const FRICTION_BACKBOARD = 0.5;
 export const FRICTION_FLOOR = 0.5;
 
+// FIBA Official Basketball Rules 2026, Art. 12.4: "A live ball lodges between
+// the ring and the backboard" is a jump ball situation, not a rebound — the
+// ball must be considered stuck, not merely rattling. core.ts treats a shot
+// as lodged only once the ball centre has stayed CONTINUOUSLY in the rim-
+// backboard pocket for at least this long after the first rim contact; a
+// brief single graze/bank through that pocket (common on steep, short lobs)
+// does not count. 1.0s was chosen after scanning the sweep's actual dwell
+// times (see offenseShots.ts's histogram) — true multi-bounce lodging settles
+// in well under a second while an ordinary bounce-through clears in well
+// under 100ms, leaving a wide, unambiguous margin at 1.0s.
+export const LODGE_MIN_S = 1.0;
+
 // Ball passing cleanly through the hoop opening loses horizontal speed to the
 // net — real nets absorb a made shot's forward momentum, which is why swishes
 // drop almost straight down instead of sailing on past the rim.
