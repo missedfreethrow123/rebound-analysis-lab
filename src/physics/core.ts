@@ -143,6 +143,29 @@ export interface ShotResult {
   // bounces, or any other field. lodgedTime is null unless lodged is true.
   lodged: boolean;
   lodgedTime: number | null; // seconds from release when the LODGE_MIN_S threshold was first crossed
+
+  // FIBA 2026: Art. 44.2.3 (the ball must enter the basket or touch the
+  // ring) and Art. 31.1.1 (a shot ends when the ball touches the floor) —
+  // a ball that touches the floor before ever touching the rim is a
+  // violation, not a valid rim-touching miss, even if it later bounces up
+  // and grazes the rim. True when the ball's FIRST rim contact (if any)
+  // happens strictly before its first floor contact (or there is no floor
+  // contact yet at all, e.g. a made shot that never reaches the floor) —
+  // a prior backboard contact doesn't disqualify this, only the floor does.
+  // False whenever there is no rim contact at all. Purely derived from the
+  // existing firstRimContactTime/floorTime fields above; no new tracking,
+  // no change to the trajectory, bounces, or any other field.
+  rimBeforeFloor: boolean;
+  validRimContactTime: number | null; // firstRimContactTime when rimBeforeFloor, else null
+
+  // Top 10 zonas view (src/rebound/categorize.ts): the point on the rim's
+  // own centre-line (the torus centreline circle, not the ball's own
+  // position) nearest the ball centre at the FIRST rim contact — i.e. where
+  // the ball first touches the ring. [x, z]; y is always RIM_HEIGHT_M, so
+  // not included. null whenever rimContacts === 0. Captured as a read-only
+  // side value inside the existing rim-collision block below; never changes
+  // the collision resolution, the trajectory, or any other field.
+  firstRimContact: [number, number] | null;
 }
 
 const RIM_Z_M = 0;
@@ -358,6 +381,9 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
   // players may only start moving REACTION_S after that instant, not after
   // an earlier backboard graze.
   let firstRimContactTime: number | null = null;
+  // Top 10 zonas view: [x,z] of the rim ring's own centre-line point nearest
+  // the ball at the FIRST rim contact — see firstRimContact's own doc above.
+  let firstRimContact: [number, number] | null = null;
   let maxHeight = posY;
   let travelDist = 0;
 
@@ -556,7 +582,10 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
           catchTime = null;
           catchSpeed = null;
           if (firstImpactTime === null) firstImpactTime = t;
-          if (firstRimContactTime === null) firstRimContactTime = t;
+          if (firstRimContactTime === null) {
+            firstRimContactTime = t;
+            firstRimContact = [nx, nz]; // ring centre-line point nearest the ball, pre-push-out
+          }
           maybeSample(t);
         }
       }
@@ -731,6 +760,9 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
 
   const { contestPoint, contestPointIsFallback } = resolveContestPoint(reboundContestPoint, floorPoint);
 
+  const rimBeforeFloor = firstRimContactTime !== null && (floorTime === null || firstRimContactTime < floorTime);
+  const validRimContactTime = rimBeforeFloor ? firstRimContactTime : null;
+
   return {
     outcome,
     trajectory: recordTrajectory ? Float32Array.from(trajectorySamples) : new Float32Array(0),
@@ -753,5 +785,8 @@ export function simulate(p: ShotParams, opts?: SimulateOptions): ShotResult {
     hitStepCap,
     lodged,
     lodgedTime,
+    rimBeforeFloor,
+    validRimContactTime,
+    firstRimContact,
   };
 }

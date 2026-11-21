@@ -197,6 +197,7 @@ const offenseShots: ShotRow[] = [];
 
 const categoryCountsAll: Record<Category, number> = { offense: 0, defense: 0, out: 0, made: 0, no_rim: 0, tie: 0, none: 0, jump_ball: 0 };
 let madeButLodgedCount = 0; // reported separately — stays in category "made" per spec, never jump_ball
+let madeButFloorFirstCount = 0; // reported separately — stays in category "made" per spec
 const winnerIdCounts: Record<string, number> = {};
 const offenseRimSectorCounts: Record<string, number> = {};
 
@@ -218,7 +219,7 @@ export function simulateAndCategorize(
   angleDeg: number,
   aimDeg: number,
   speed: number,
-): Omit<ShotRow, "angleDeg" | "aimDeg" | "speedMps"> & { madeButLodged: boolean } {
+): Omit<ShotRow, "angleDeg" | "aimDeg" | "speedMps"> & { madeButLodged: boolean; madeButFloorFirst: boolean } {
   const cheap = simulate({ heightCm: HEIGHT_CM, angleDeg, aimDeg, speed, spinRps: SPIN_RPS }, { recordTrajectory: false });
 
   let category: Category;
@@ -231,10 +232,19 @@ export function simulateAndCategorize(
   let catchHeight: number | null = null;
   let outReason: "floor" | "player" | null = null;
   let madeButLodged = false;
+  let madeButFloorFirst = false;
 
   if (cheap.outcome === "made") {
     category = "made";
     if (cheap.lodged) madeButLodged = true; // stays "made" per spec — just tallied separately
+    // FIBA 2026 Art. 31.1.1: a shot ends when the ball touches the floor —
+    // a made shot that rattled the rim only after an earlier floor touch
+    // stays "made" per spec, but is tallied separately. Only detectable via
+    // rimBeforeFloor when there WAS a rim contact (rimContacts > 0); a clean
+    // swish with zero rim contacts can't be checked this way, but touching
+    // the floor and then swishing through the net without ever grazing the
+    // rim is not achievable in practice, so this covers the case that matters.
+    if (cheap.rimContacts > 0 && !cheap.rimBeforeFloor) madeButFloorFirst = true;
     if (cheap.rimContacts > 0) {
       // Rim-and-in: still want rimHitAngleDeg, needs the trajectory.
       const withTraj = simulate({ heightCm: HEIGHT_CM, angleDeg, aimDeg, speed, spinRps: SPIN_RPS }, { recordTrajectory: true });
@@ -242,14 +252,20 @@ export function simulateAndCategorize(
       rimHitAngleDeg = rimHitAngleDegOf(hit.x, hit.z);
       rimSector = rimSectorOf(rimHitAngleDeg);
     }
-  } else if (cheap.rimContacts === 0) {
+  } else if (cheap.rimContacts === 0 || !cheap.rimBeforeFloor) {
+    // FIBA 2026 Art. 44.2.3 / 31.1.1: no rim contact at all, OR the ball
+    // touched the floor before ever touching the rim — a violation, not a
+    // valid rim-touching miss, even if the rim is grazed later. Same
+    // "no_rim" bucket, same null rimHitAngleDeg/rimSector, as a shot that
+    // never touches the rim at all — consistent column semantics either way.
     category = "no_rim";
   } else if (cheap.lodged) {
     // FIBA 2026 Art. 12.4: lodged between ring and backboard — a jump
-    // ball, not a rebound. No simulateRebound() call: there is no
-    // rebound to contest, so winnerId/catch* all stay null. Still
-    // wants rimHitAngleDeg/rimSector for the output columns, same as
-    // the made-with-rim-contact branch above.
+    // ball, not a rebound. Only reachable here with rimBeforeFloor true
+    // (the branch above already routed the floor-first case to no_rim).
+    // No simulateRebound() call: there is no rebound to contest, so
+    // winnerId/catch* all stay null. Still wants rimHitAngleDeg/rimSector
+    // for the output columns, same as the made-with-rim-contact branch above.
     category = "jump_ball";
     const withTraj = simulate({ heightCm: HEIGHT_CM, angleDeg, aimDeg, speed, spinRps: SPIN_RPS }, { recordTrajectory: true });
     const hit = nearestSample(withTraj.trajectory, withTraj.firstRimContactTime!);
@@ -273,7 +289,7 @@ export function simulateAndCategorize(
     }
   }
 
-  return { category, rimHitAngleDeg, rimSector, winnerId, catchX, catchZ, catchTime, catchHeight, outReason, madeButLodged };
+  return { category, rimHitAngleDeg, rimSector, winnerId, catchX, catchZ, catchTime, catchHeight, outReason, madeButLodged, madeButFloorFirst };
 }
 
 const startWall = Date.now();
@@ -285,9 +301,10 @@ for (const angleDeg of ANGLE_VALUES) {
     for (const speed of SPEED_VALUES) {
       processed++;
       if ((processed - 1) % everyN === 0) {
-        const { madeButLodged, ...rest } = simulateAndCategorize(angleDeg, aimDeg, speed);
+        const { madeButLodged, madeButFloorFirst, ...rest } = simulateAndCategorize(angleDeg, aimDeg, speed);
         const { category, rimHitAngleDeg, rimSector, winnerId, catchX, catchZ, catchTime, catchHeight, outReason } = rest;
         if (madeButLodged) madeButLodgedCount++;
+        if (madeButFloorFirst) madeButFloorFirstCount++;
 
         const row: ShotRow = {
           angleDeg,
@@ -429,6 +446,7 @@ const rimTouchingMisses =
 console.log(`\n========== SUMMARY ==========`);
 console.log(`Total shots simulated: ${totalAll.toLocaleString()}`);
 console.log(`Made shots that were lodged first (still category "made"): ${madeButLodgedCount.toLocaleString()}`);
+console.log(`Made shots that touched the floor before entering the basket (still category "made"): ${madeButFloorFirstCount.toLocaleString()}`);
 console.log(`\nOutcome category, over ALL shots:`);
 for (const cat of ["offense", "defense", "out", "made", "no_rim", "tie", "none", "jump_ball"] as Category[]) {
   console.log(`  ${cat.padEnd(10)} ${categoryCountsAll[cat].toLocaleString().padStart(8)}  (${pct(categoryCountsAll[cat], totalAll)})`);

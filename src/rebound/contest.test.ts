@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contestLanding, isInboundsLanding, isAttackerEligible, startDelayFor, PAIRING, REACTION_S, SHOOTER_RECOVERY_S, PLAYER_SPEED_MPS } from "./contest";
+import { contestLanding, isInboundsLanding, isAttackerEligible, startDelayFor, PAIRING, REACTION_S, PLAYER_SPEED_MPS } from "./contest";
 import { PLAYERS } from "./players";
 
 const dL = PLAYERS.find((p) => p.id === "D_L")!;
@@ -40,15 +40,11 @@ describe("PAIRING (global minimum-total-distance matching)", () => {
 });
 
 describe("startDelayFor", () => {
-  it("defaults releaseToRimS to 0, reproducing the pre-FIBA-timing REACTION_S for everyone but the shooter", () => {
+  it("defaults releaseToRimS to 0, reproducing the pre-FIBA-timing REACTION_S for every player including the shooter", () => {
     expect(startDelayFor("D_L")).toBeCloseTo(REACTION_S, 9);
     expect(startDelayFor("O_L")).toBeCloseTo(REACTION_S, 9);
     expect(startDelayFor("D_3")).toBeCloseTo(REACTION_S, 9);
-  });
-
-  it("is REACTION_S + SHOOTER_RECOVERY_S (0.56s) for the shooter", () => {
-    expect(startDelayFor("SHOOTER")).toBeCloseTo(REACTION_S + SHOOTER_RECOVERY_S, 9);
-    expect(startDelayFor("SHOOTER")).toBeCloseTo(0.56, 9);
+    expect(startDelayFor("SHOOTER")).toBeCloseTo(REACTION_S, 9);
   });
 
   it("FIBA 44.2.4: a lane player's start time is t_release + REACTION_S, not t_rim + REACTION_S", () => {
@@ -63,9 +59,9 @@ describe("startDelayFor", () => {
     }
   });
 
-  it("FIBA 44.2.3: the shooter's start time is unchanged (still t_rim + 0.56s) regardless of flight time", () => {
+  it("FIBA 44.2.3: the shooter's start time is unchanged (still t_rim + REACTION_S, no extra recovery) regardless of flight time", () => {
     for (const releaseToRimS of [0.2, 0.75, 1.3, 2.0]) {
-      expect(startDelayFor("SHOOTER", releaseToRimS)).toBeCloseTo(REACTION_S + SHOOTER_RECOVERY_S, 9);
+      expect(startDelayFor("SHOOTER", releaseToRimS)).toBeCloseTo(REACTION_S, 9);
     }
   });
 });
@@ -103,11 +99,13 @@ describe("contestLanding — idealized box-out with pairing (movement phase)", (
     expect(result.winnerId).toBe("O_L");
   });
 
-  it("the shooter is eligible past the free-throw line but their 0.56s recovery delay still loses to a nearer defender", () => {
+  it("the shooter is eligible past the free-throw line but still loses to a nearer defender", () => {
     // Offset toward D_3 (the shooter's paired defender) and a bit past the
     // free-throw line in depth — eligible for the shooter (farther from the
-    // rim than their own start) but D_3 sits right next to it with no start
-    // delay, easily beating the shooter's 0.56s-delayed sprint from farther away.
+    // rim than their own start), but D_3 sits right next to it (same
+    // REACTION_S delay as the shooter now — see startDelayFor), so D_3's
+    // much shorter travel distance alone easily beats the shooter's sprint
+    // from much farther away.
     const P = { x: d3.x, z: shooter.z - 0.1 };
     const shooterDistToRim = Math.hypot(shooter.x, shooter.z);
     expect(Math.hypot(P.x, P.z)).toBeGreaterThan(shooterDistToRim);

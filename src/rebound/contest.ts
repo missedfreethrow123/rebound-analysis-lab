@@ -8,8 +8,8 @@
 //
 // MOVEMENT PHASE (idealized box-out): supersedes Phase 2's flat delta-t
 // handicap (BOXOUT_DELAY_S/startOffsetFor are gone — every attacker's start
-// delay is now REACTION_S, same as a defender, except the shooter's own
-// extra recovery delay; see startDelayFor). The handicap is no longer a
+// delay is now REACTION_S, same as a defender, including the shooter — see
+// startDelayFor). The handicap is no longer a
 // uniform time penalty — it's an ELIGIBILITY rule (isAttackerEligible):
 // an attacker who is closer to the rim than the ball's landing point is
 // considered perfectly boxed out and cannot win that landing at all,
@@ -25,8 +25,7 @@ import { COURT_WIDTH_M, HALF_COURT_LENGTH_M, BASELINE_TO_RIM_M } from "@/physics
 import { PLAYERS, type Team } from "./players";
 
 export const PLAYER_SPEED_MPS = 4.3;
-export const REACTION_S = 0.28; // everyone
-export const SHOOTER_RECOVERY_S = 0.28; // extra, shooter only — just released the shot
+export const REACTION_S = 0.28; // everyone, including the shooter
 
 // START TIME (FIBA 2026):
 // - 44.2.4: lane players (the 3 defenders and the 2 non-shooter attackers in
@@ -40,8 +39,11 @@ export const SHOOTER_RECOVERY_S = 0.28; // extra, shooter only — just released
 // before by however long the ball took to reach the rim — releaseToRimS,
 // which is exactly core.ts's firstRimContactTime (seconds from release to
 // first rim contact; release is always t=0 there, so that IS t_rim measured
-// from release). The shooter's delay is unchanged: it was already measured
-// from t_rim, not release, so releaseToRimS doesn't enter it.
+// from release). The shooter's own delay doesn't subtract releaseToRimS —
+// FIBA 44.2.3 measures it from t_rim directly, not from release, since the
+// shooter can't move at all before the rim is touched regardless of how
+// long the flight took — but it's otherwise just REACTION_S, same as
+// everyone else: the shooter gets no extra recovery time on top of it.
 //
 // releaseToRimS defaults to 0 for callers with no specific simulated shot to
 // read it from (src/rebound/winnerField.ts's synthetic, position-only grid)
@@ -49,7 +51,7 @@ export const SHOOTER_RECOVERY_S = 0.28; // extra, shooter only — just released
 // contest (single shot, or the sweep's per-shot split) must pass the actual
 // value from that shot's own ShotResult.firstRimContactTime.
 export function startDelayFor(playerId: string, releaseToRimS = 0): number {
-  return playerId === "SHOOTER" ? REACTION_S + SHOOTER_RECOVERY_S : REACTION_S - releaseToRimS;
+  return playerId === "SHOOTER" ? REACTION_S : REACTION_S - releaseToRimS;
 }
 
 // Rim's floor projection — (0,0) in this court frame (core.ts: RIM_Z_M = 0,

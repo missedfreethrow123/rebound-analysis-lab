@@ -127,6 +127,18 @@ const SCATTER_DOT_RADIUS_M = M(0.075); // ~0.5% of COURT_WIDTH_M (15m) — small
 const SCATTER_DOT_COLOR = 0x3b82c4;
 const SCATTER_DOT_Y = 0.02; // above the floor (0), key paint (0.002), and painted lines (0.004) — sits on top, like ink on the court
 
+// "Top 10 zonas" view (src/rebound/top10Zones.ts): per-zone-coloured dots at
+// each offense shot's catch point (on the floor) and first rim contact
+// point (on the rim). Mutually exclusive with the scatter heat map above —
+// routes/index.tsx only ever supplies one of `heatmap`/`top10Zones` at a
+// time — so sharing SCATTER_DOT_Y for the court dots is safe.
+const TOP10_COURT_DOT_RADIUS_M = M(0.06);
+const TOP10_RIM_DOT_RADIUS_M = M(0.015);
+// Sits on top of the rim tube's own top surface (RIM_Y + tube radius) with a
+// small clearance so it never z-fights the torus geometry, visible looking
+// straight down from the top-down/rim-closeup cameras.
+const TOP10_RIM_DOT_Y = RIM_Y + RIM_TUBE + M(0.004);
+
 // Rebound-contest winner map (src/rebound/winnerField.ts): one flat square
 // InstancedMesh cell per grid sample, tinted green (offense) or purple
 // (defense) via per-instance vertex colour, uniform material opacity. Sits
@@ -280,6 +292,15 @@ const ORTHO_VIEW_HALF_HEIGHT = 9.5;
 // makes the boundary lines continue naturally to the edge of the view, like a
 // real full court, instead of ending inside it.
 const SIDELINE_FAR_Z = HEATMAP_CENTER_Z - ORTHO_VIEW_HALF_HEIGHT - 3;
+
+// "Top 10 zonas" rim close-up: a SEPARATE top-down orthographic camera
+// (not a reframe of orthoCamera above, which stays dedicated to the wide
+// heat-map footprint) tightly centred on the rim+backboard so both are
+// fully visible. Centred between the rim (z=0) and the backboard's front
+// face (BACKBOARD_Z); half-height chosen so the rim (radius RIM_RADIUS_M)
+// and the backboard (BACKBOARD_H_M tall) both sit comfortably inside frame.
+const RIM_CLOSEUP_CENTER_Z = BACKBOARD_Z / 2;
+const RIM_CLOSEUP_HALF_HEIGHT = M(1.0);
 
 // Aim preview (picture-in-picture, bottom-right corner): a small, STATIC
 // second camera pointed at the fixed rim/backboard assembly. It never reacts
@@ -442,6 +463,8 @@ export default function FreeThrowSim({
   markers,
   onCanShootChange,
   heatmap,
+  top10Zones,
+  cameraOverride,
   controlsOpen = true,
   isMobile = false,
 }: {
@@ -456,6 +479,25 @@ export default function FreeThrowSim({
   // filtering to rim-touching misses — this component only knows how to draw
   // whatever points it's given. `points` is flat [x,z,x,z,...] world coordinates.
   heatmap?: { points: Float32Array; opacity: number } | null;
+  // Optional, mutually exclusive with `heatmap` (routes/index.tsx only ever
+  // supplies one at a time): per-zone-coloured dots for the "Top 10 zonas"
+  // view — offense shots' catch points (floor) and first rim contact points
+  // (on the rim). `courtPoints`/`rimPoints` are flat [x,z,x,z,...] world
+  // coordinates; `courtColors`/`rimColors` are flat [r,g,b,r,g,b,...] in
+  // [0,1], one triple per point, same order.
+  top10Zones?: {
+    courtPoints: Float32Array;
+    courtColors: Float32Array;
+    rimPoints: Float32Array;
+    rimColors: Float32Array;
+  } | null;
+  // Optional camera override for the "Top 10 zonas" view: "orthographic"
+  // reuses the SAME wide top-down camera the heat map uses; "rimCloseup"
+  // switches to a tight top-down framing of just the rim+backboard (the
+  // legend panel's zoom button). Falls back to the ordinary internal
+  // perspective/orthographic toggle when null/undefined — the existing
+  // single-shot and heat-map camera behavior is completely unaffected.
+  cameraOverride?: "orthographic" | "rimCloseup" | null;
   // Whether the mobile bottom sheet (the controls panel — see routes/index.tsx)
   // is currently open. Only used in portrait, on phones, to keep the aim box
   // riding just above the sheet instead of getting covered by it — see the
@@ -493,7 +535,9 @@ export default function FreeThrowSim({
     scene?: THREE.Scene;
     camera?: THREE.PerspectiveCamera;
     orthoCamera?: THREE.OrthographicCamera;
+    rimCamera?: THREE.OrthographicCamera;
     cameraMode: "perspective" | "orthographic";
+    cameraOverride: "orthographic" | "rimCloseup" | null;
     ball?: THREE.Mesh;
     flying: boolean;
     result?: ShotResult; // precomputed by simulate() when the shot is fired; the rAF loop only ever plays it back
@@ -507,6 +551,8 @@ export default function FreeThrowSim({
     scatterMesh?: THREE.InstancedMesh;
     keyMaterial?: THREE.MeshStandardMaterial;
     winnerFieldMesh?: THREE.InstancedMesh;
+    top10CourtMesh?: THREE.InstancedMesh;
+    top10RimMesh?: THREE.InstancedMesh;
     // Rebound-contest one-shot visualisation (src/rebound/movement.ts drives
     // the math — frame-by-frame, no foreknowledge of the ball's eventual
     // point; see its own header. Everything here is just the Three.js side
@@ -525,6 +571,7 @@ export default function FreeThrowSim({
     canShoot: true,
     hoopCamPos: CAM_HOOP_POS.clone(),
     cameraMode: "perspective",
+    cameraOverride: null,
     playStartTime: 0,
     movementHighlighted: false,
     movementCursor: 0,
@@ -532,6 +579,13 @@ export default function FreeThrowSim({
     landingFired: false,
   });
   const [cameraMode, setCameraMode] = useState<"perspective" | "orthographic">("perspective");
+  // Mirrors the `cameraOverride` prop into stateRef so the animate() loop
+  // (a stable closure set up once at scene-init — see the camera-selection
+  // comment there) always reads the latest value, the same way cameraMode
+  // itself is mirrored imperatively by the toggle button's onClick below.
+  useEffect(() => {
+    stateRef.current.cameraOverride = cameraOverride ?? null;
+  }, [cameraOverride]);
   // Brief "Offense/Defense gets the rebound" banner — set once when a
   // contest's winner highlight fires (see the animate() loop), cleared by
   // its own timeout a couple seconds later. Only a rim-touching shot with a
@@ -575,6 +629,21 @@ export default function FreeThrowSim({
     orthoCamera.position.set(0, 30, HEATMAP_CENTER_Z);
     orthoCamera.lookAt(0, 0, HEATMAP_CENTER_Z);
     orthoCamera.layers.enable(MAIN_VIEW_TRAJ_LAYER); // see MAIN_VIEW_TRAJ_LAYER's comment above
+
+    // "Top 10 zonas" rim close-up: a separate, tightly-framed top-down
+    // camera — see RIM_CLOSEUP_CENTER_Z/RIM_CLOSEUP_HALF_HEIGHT's own comment.
+    const rimCamera = new THREE.OrthographicCamera(
+      (-RIM_CLOSEUP_HALF_HEIGHT * width) / height,
+      (RIM_CLOSEUP_HALF_HEIGHT * width) / height,
+      RIM_CLOSEUP_HALF_HEIGHT,
+      -RIM_CLOSEUP_HALF_HEIGHT,
+      0.1,
+      100,
+    );
+    rimCamera.up.set(0, 0, 1);
+    rimCamera.position.set(0, 30, RIM_CLOSEUP_CENTER_Z);
+    rimCamera.lookAt(0, 0, RIM_CLOSEUP_CENTER_Z);
+    rimCamera.layers.enable(MAIN_VIEW_TRAJ_LAYER);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -1203,6 +1272,7 @@ export default function FreeThrowSim({
     stateRef.current.scene = scene;
     stateRef.current.camera = camera;
     stateRef.current.orthoCamera = orthoCamera;
+    stateRef.current.rimCamera = rimCamera;
     stateRef.current.ball = ball;
     stateRef.current.markerGroup = markerGroup;
     stateRef.current.trajLine = trajLine;
@@ -1344,14 +1414,19 @@ export default function FreeThrowSim({
       // instant Shoot fires (st.flying) and back the moment it lands — same
       // state, same trigger the aim preview box above already hides/shows on.
       if (st.trajLine) st.trajLine.visible = !st.flying;
-      // Camera: the orthographic top-down toggle overrides the normal
-      // shooter/hoop-cam switching entirely while active — it exists
+      // Camera: cameraOverride ("Top 10 zonas") takes priority over
+      // everything else — "rimCloseup" for the legend panel's zoom button,
+      // "orthographic" to reuse the SAME wide top-down camera the heat map
+      // uses. Otherwise, the orthographic top-down toggle overrides the
+      // normal shooter/hoop-cam switching entirely while active — it exists
       // specifically to read the heat map square-on, not to also track the
       // shot animation. Otherwise, exactly two fixed perspective angles,
       // hard-switched — overhead hoop cam while the shot is in flight,
       // shooter view otherwise. No blending between any of these.
       let activeCamera: THREE.Camera = camera;
-      if (st.cameraMode === "orthographic") {
+      if (st.cameraOverride === "rimCloseup") {
+        activeCamera = rimCamera;
+      } else if (st.cameraOverride === "orthographic" || st.cameraMode === "orthographic") {
         activeCamera = orthoCamera;
       } else if (st.flying) {
         // st.hoopCamPos: same CAM_HOOP_TARGET sightline/angle as CAM_HOOP_POS,
@@ -1401,6 +1476,11 @@ export default function FreeThrowSim({
       orthoCamera.top = ORTHO_VIEW_HALF_HEIGHT;
       orthoCamera.bottom = -ORTHO_VIEW_HALF_HEIGHT;
       orthoCamera.updateProjectionMatrix();
+      rimCamera.left = (-RIM_CLOSEUP_HALF_HEIGHT * w) / h;
+      rimCamera.right = (RIM_CLOSEUP_HALF_HEIGHT * w) / h;
+      rimCamera.top = RIM_CLOSEUP_HALF_HEIGHT;
+      rimCamera.bottom = -RIM_CLOSEUP_HALF_HEIGHT;
+      rimCamera.updateProjectionMatrix();
       if (previewMount && previewRenderer && previewCamera) {
         const pw = previewMount.clientWidth;
         const ph = previewMount.clientHeight;
@@ -1676,6 +1756,65 @@ export default function FreeThrowSim({
     st.scene.add(fieldMesh);
     st.winnerFieldMesh = fieldMesh;
   }, [heatmap, isMobile]);
+
+  // "Top 10 zonas" dots: same InstancedMesh-per-frame-rebuild pattern as the
+  // heat map's scatter dots above, just with per-instance colour (one swatch
+  // per zone) instead of a single uniform colour, and two independent
+  // meshes — one on the floor (catch points), one on the rim (first rim
+  // contact points). Mutually exclusive with the heat map (routes/index.tsx
+  // only ever supplies one of `heatmap`/`top10Zones` at a time).
+  useEffect(() => {
+    const st = stateRef.current;
+    if (!st.scene) return;
+
+    if (st.top10CourtMesh) {
+      st.scene.remove(st.top10CourtMesh);
+      st.top10CourtMesh.geometry.dispose();
+      (st.top10CourtMesh.material as THREE.Material).dispose();
+      st.top10CourtMesh = undefined;
+    }
+    if (st.top10RimMesh) {
+      st.scene.remove(st.top10RimMesh);
+      st.top10RimMesh.geometry.dispose();
+      (st.top10RimMesh.material as THREE.Material).dispose();
+      st.top10RimMesh = undefined;
+    }
+
+    if (!top10Zones || top10Zones.courtPoints.length === 0) return;
+
+    const buildDotMesh = (points: Float32Array, colors: Float32Array, radius: number, y: number, renderOrder: number) => {
+      const count = points.length / 2;
+      const geometry = new THREE.CircleGeometry(radius, 16);
+      const material = new THREE.MeshBasicMaterial({
+        transparent: true,
+        opacity: 0.8,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      });
+      const mesh = new THREE.InstancedMesh(geometry, material, count);
+      mesh.renderOrder = renderOrder;
+      const dummy = new THREE.Object3D();
+      dummy.rotation.x = -Math.PI / 2; // lie flat, visible from directly above
+      for (let i = 0; i < count; i++) {
+        dummy.position.set(points[i * 2], y, points[i * 2 + 1]);
+        dummy.updateMatrix();
+        mesh.setMatrixAt(i, dummy.matrix);
+        mesh.setColorAt(i, new THREE.Color(colors[i * 3], colors[i * 3 + 1], colors[i * 3 + 2]));
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      return mesh;
+    };
+
+    const courtMesh = buildDotMesh(top10Zones.courtPoints, top10Zones.courtColors, TOP10_COURT_DOT_RADIUS_M, SCATTER_DOT_Y, 1);
+    st.scene.add(courtMesh);
+    st.top10CourtMesh = courtMesh;
+
+    const rimMesh = buildDotMesh(top10Zones.rimPoints, top10Zones.rimColors, TOP10_RIM_DOT_RADIUS_M, TOP10_RIM_DOT_Y, 2);
+    st.scene.add(rimMesh);
+    st.top10RimMesh = rimMesh;
+  }, [top10Zones]);
 
   return (
     <div className="relative w-full h-full overscroll-none max-lg:portrait:overflow-hidden">

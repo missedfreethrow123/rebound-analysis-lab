@@ -11,11 +11,34 @@ import type { SimControls } from "@/components/FreeThrowSim";
 import { startSweep, type SweepHandle } from "@/physics/sweep";
 import { defaultSweepConfig, sweepCacheKey, totalShotCount, type SweepConfig } from "@/physics/sweepConfig";
 import type { SweepGrid, SweepStats } from "@/physics/sweepGrid";
-import { SHOOTER_HEIGHT_CM } from "@/physics/constants";
+import { SHOOTER_HEIGHT_CM, DEFAULT_BACKSPIN_RPS } from "@/physics/constants";
 import { OFFENSE_COLOR, DEFENSE_COLOR } from "@/rebound/players";
 import { contestLanding } from "@/rebound/contest";
+import {
+  TOP10_ZONES,
+  SHOTS_PER_ZONE,
+  ANGLE_ERROR_DEG,
+  AIM_ERROR_DEG,
+  SPEED_ERROR_MPS,
+  iterateTop10ZoneShots,
+  finalizeTop10Zones,
+  type Top10ZoneShot,
+  type ZoneCounts,
+  type CountMismatch,
+} from "@/rebound/top10Zones";
+import { buildTop10Csv, buildTop10Xlsx, downloadBlob } from "@/rebound/top10Export";
 
 const hexColor = (n: number) => `#${n.toString(16).padStart(6, "0")}`;
+
+function hexToRgb01(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+// One zone's 125 shots per chunk — yields to the browser between chunks
+// (via setTimeout) so a slow shot or ten doesn't freeze the UI for the
+// whole ~1250-shot run.
+const TOP10_CHUNK_SIZE = SHOTS_PER_ZONE;
 
 const FreeThrowSim = lazy(() => import("@/components/FreeThrowSim"));
 
@@ -87,7 +110,24 @@ function Index() {
   const [sweepConfig, setSweepConfig] = useState<SweepConfig | null>(null);
   const [sweepProgress, setSweepProgress] = useState<{ shotsCompleted: number; totalShotsPlanned: number } | null>(null);
   const sweepHandleRef = useRef<SweepHandle | null>(null);
+  const sweepTokenRef = useRef(0); // see its use inside startHeatMap for why
   const sweepCacheRef = useRef(new Map<string, CachedSweep>());
+
+  // "Top 10 zonas" view state. Mutually exclusive with the heat map above —
+  // opening one clears the other (see startTop10Zones/startHeatMap). Result
+  // is cached in top10CacheRef once computed (same config every time, the
+  // zones are hard-coded) so a second open/close cycle is instant, matching
+  // the heat map's own cache-on-first-compute behavior.
+  const [top10Phase, setTop10Phase] = useState<SweepPhase>("idle");
+  const [top10Shots, setTop10Shots] = useState<Top10ZoneShot[] | null>(null);
+  const [top10Counts, setTop10Counts] = useState<ZoneCounts[] | null>(null);
+  const [top10Mismatches, setTop10Mismatches] = useState<CountMismatch[] | null>(null);
+  const [top10Progress, setTop10Progress] = useState(0); // shots completed, 0..1250
+  const [rimZoomed, setRimZoomed] = useState(false);
+  const top10CacheRef = useRef<{ shots: Top10ZoneShot[]; countsByZone: ZoneCounts[]; mismatches: CountMismatch[] } | null>(null);
+  const top10GenRef = useRef<Generator<Top10ZoneShot, void, void> | null>(null);
+  const top10BufRef = useRef<Top10ZoneShot[]>([]);
+  const top10CancelledRef = useRef(false);
 
   const controls = useMemo<SimControls>(() => ({ angleDeg, aimDeg, power }), [angleDeg, aimDeg, power]);
 
@@ -126,7 +166,131 @@ function Index() {
     return { qualifying, offensePercent: (offenseWins / qualifying) * 100, defensePercent: (defenseWins / qualifying) * 100 };
   }, [contestPoints, contestFlightTimes]);
 
+  // Court dots (catch point) + rim dots (first rim contact) for every
+  // OFFENSE shot, coloured by zone — the only outcome that gets drawn (see
+  // the task spec: "For any other outcome, record neither"). Recomputed
+  // only when the shot list itself changes (a fresh run, or closing the
+  // view), not on every unrelated re-render.
+  const top10RenderData = useMemo(() => {
+    if (!top10Shots || top10Shots.length === 0) return null;
+    const courtPoints: number[] = [];
+    const courtColors: number[] = [];
+    const rimPoints: number[] = [];
+    const rimColors: number[] = [];
+    for (const shot of top10Shots) {
+      if (shot.category !== "offense") continue;
+      const [r, g, b] = hexToRgb01(TOP10_ZONES[shot.zoneIndex].color);
+      if (shot.catchPoint) {
+        courtPoints.push(shot.catchPoint.x, shot.catchPoint.z);
+        courtColors.push(r, g, b);
+      }
+      if (shot.firstRimContact) {
+        rimPoints.push(shot.firstRimContact.x, shot.firstRimContact.z);
+        rimColors.push(r, g, b);
+      }
+    }
+    return {
+      courtPoints: Float32Array.from(courtPoints),
+      courtColors: Float32Array.from(courtColors),
+      rimPoints: Float32Array.from(rimPoints),
+      rimColors: Float32Array.from(rimColors),
+    };
+  }, [top10Shots]);
+
+  // cameraOverride for FreeThrowSim: only active while the view is actually
+  // showing (not mid-computation) — "orthographic" reuses the heat map's own
+  // wide top-down camera; "rimCloseup" is the legend panel's zoom button.
+  const top10CameraOverride = top10Phase === "done" && top10Shots ? (rimZoomed ? "rimCloseup" : "orthographic") : null;
+
+  const closeTop10 = () => {
+    top10GenRef.current = null;
+    top10CancelledRef.current = true;
+    top10BufRef.current = [];
+    setTop10Phase("idle");
+    setTop10Shots(null);
+    setTop10Counts(null);
+    setTop10Mismatches(null);
+    setTop10Progress(0);
+    setRimZoomed(false);
+  };
+
+  const runTop10Chunk = () => {
+    const gen = top10GenRef.current;
+    if (!gen || top10CancelledRef.current) return;
+    for (let i = 0; i < TOP10_CHUNK_SIZE; i++) {
+      const next = gen.next();
+      if (next.done) {
+        const shots = top10BufRef.current;
+        const { countsByZone, mismatches } = finalizeTop10Zones(shots);
+        if (mismatches.length > 0) {
+          // Mandatory: log to console, never silently "fix" the physics/inputs.
+          console.warn("Top 10 zonas: count mismatch vs. the team's expected breakdown", mismatches);
+        }
+        top10CacheRef.current = { shots, countsByZone, mismatches };
+        setTop10Shots(shots);
+        setTop10Counts(countsByZone);
+        setTop10Mismatches(mismatches);
+        setTop10Progress(shots.length);
+        setTop10Phase("done");
+        top10GenRef.current = null;
+        return;
+      }
+      top10BufRef.current.push(next.value);
+    }
+    setTop10Progress(top10BufRef.current.length);
+    setTimeout(runTop10Chunk, 0); // yield to the browser before the next zone's shots
+  };
+
+  const startTop10Zones = () => {
+    if (top10Phase === "done" && top10Shots) {
+      closeTop10();
+      return;
+    }
+    if (top10Phase === "running") return;
+    if (top10CacheRef.current) {
+      const cached = top10CacheRef.current;
+      setTop10Shots(cached.shots);
+      setTop10Counts(cached.countsByZone);
+      setTop10Mismatches(cached.mismatches);
+      setTop10Progress(cached.shots.length);
+      setTop10Phase("done");
+      return;
+    }
+    // Mutually exclusive with the heat map — only one overlay at a time.
+    if (sweepPoints || sweepPhase !== "idle") {
+      sweepTokenRef.current++; // invalidate any in-flight progress delivery first — see startHeatMap's comment
+      sweepHandleRef.current?.cancel();
+      sweepHandleRef.current = null;
+      setSweepPoints(null);
+      setContestPoints(null);
+      setContestFlightTimes(null);
+      setSweepGrid(null);
+      setSweepStats(null);
+      setSweepConfig(null);
+      setSweepPhase("idle");
+      setSweepProgress(null);
+    }
+    top10CancelledRef.current = false;
+    top10BufRef.current = [];
+    setTop10Progress(0);
+    setTop10Phase("running");
+    top10GenRef.current = iterateTop10ZoneShots(SHOOTER_HEIGHT_CM, DEFAULT_BACKSPIN_RPS);
+    runTop10Chunk();
+  };
+
+  const downloadTop10Csv = () => {
+    if (!top10Shots) return;
+    downloadBlob(new Blob([buildTop10Csv(top10Shots)], { type: "text/csv;charset=utf-8" }), "top10_zonas.csv");
+  };
+  const downloadTop10Xlsx = async () => {
+    if (!top10Shots) return;
+    downloadBlob(await buildTop10Xlsx(top10Shots), "top10_zonas.xlsx");
+  };
+
   const startHeatMap = () => {
+    // Mutually exclusive with "Top 10 zonas" — only one overlay at a time.
+    if (top10Phase !== "idle") closeTop10();
+
     const config = defaultSweepConfig(SHOOTER_HEIGHT_CM, isMobile);
     const key = sweepCacheKey(config);
 
@@ -163,7 +327,17 @@ function Index() {
     setSweepConfig(config);
     setSweepPhase("running");
     setSweepProgress({ shotsCompleted: 0, totalShotsPlanned: totalShotCount(config) });
+    // sweepTokenRef guards against a stale progress delivery: cancel() isn't
+    // synchronous — each worker still flushes one final partial update after
+    // receiving the cancel message (see sweep.ts's own comment on why: it
+    // deliberately keeps partial progress for the Cancel BUTTON's use case).
+    // That's correct there, but wrong when abandoning the sweep entirely
+    // (switching to the "Top 10 zonas" view — see startTop10Zones), which
+    // bumps this token first so this late callback becomes a no-op instead
+    // of reviving heat-map state right after it was cleared.
+    const myToken = ++sweepTokenRef.current;
     const handle = startSweep(config, (progress) => {
+      if (sweepTokenRef.current !== myToken) return;
       setSweepGrid(progress.grid);
       setSweepStats(progress.stats);
       setSweepPoints(progress.points);
@@ -297,6 +471,14 @@ function Index() {
             {sweepPhase === "running" ? "Computing…" : sweepPhase === "done" && sweepPoints ? "Hide heat map" : "Heat map"}
           </Button>
           <Button
+            variant="secondary"
+            className="h-11 w-full max-lg:landscape:w-auto max-lg:landscape:flex-1 lg:h-9 lg:w-auto lg:flex-1"
+            disabled={top10Phase === "running"}
+            onClick={startTop10Zones}
+          >
+            {top10Phase === "running" ? "Rēķina…" : top10Phase === "done" && top10Shots ? "Hide top 10 zonas" : "Top 10 zonas"}
+          </Button>
+          <Button
             variant="outline"
             className="h-11 w-full max-lg:landscape:w-auto lg:h-9 lg:w-auto"
             onClick={() => { setMarkers([]); setStats(null); }}
@@ -320,6 +502,16 @@ function Index() {
             <Button variant="outline" size="sm" className="h-11 w-full lg:h-8" onClick={cancelHeatMap}>
               Cancel
             </Button>
+          </div>
+        )}
+
+        {top10Phase === "running" && (
+          <div className="space-y-1 md:space-y-2">
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>Rēķina top 10 zonas… {top10Progress.toLocaleString()} / {(TOP10_ZONES.length * SHOTS_PER_ZONE).toLocaleString()}</span>
+              <span>{Math.round((top10Progress / (TOP10_ZONES.length * SHOTS_PER_ZONE)) * 100)}%</span>
+            </div>
+            <Progress value={(top10Progress / (TOP10_ZONES.length * SHOTS_PER_ZONE)) * 100} />
           </div>
         )}
 
@@ -400,12 +592,23 @@ function Index() {
               Qualifying = touched the rim AND that point landed inbounds. Winner = whoever starts closest among
               ELIGIBLE players — an attacker is boxed out (ineligible) for any point closer to the rim than they
               are; defenders are always eligible. Per FIBA, lane players (defenders and non-shooter attackers) may
-              move from the moment the ball leaves the shooter's hand, plus a 0.3s reaction; the shooter can't move
-              until the ball touches the rim, plus the same 0.3s reaction and an extra 0.3s recovery. Catch-height
+              move from the moment the ball leaves the shooter's hand, plus a 0.28s reaction; the shooter can't move
+              until the ball touches the rim, plus the same 0.28s reaction — no extra delay. Catch-height
               fallback = shots that never came back down through 2.44m after the rim, so the floor landing was used
               instead — should be ~0.
             </div>
           </div>
+        )}
+
+        {top10Phase === "done" && top10Counts && (
+          <Top10ZonasPanel
+            counts={top10Counts}
+            mismatches={top10Mismatches ?? []}
+            rimZoomed={rimZoomed}
+            onToggleZoom={() => setRimZoomed((v) => !v)}
+            onDownloadCsv={downloadTop10Csv}
+            onDownloadXlsx={downloadTop10Xlsx}
+          />
         )}
         </div>
       </aside>
@@ -421,6 +624,8 @@ function Index() {
               markers={markers}
               onCanShootChange={setCanShoot}
               heatmap={heatmap}
+              top10Zones={top10RenderData}
+              cameraOverride={top10CameraOverride}
               controlsOpen={sheetOpen}
               isMobile={isMobile}
             />
@@ -467,6 +672,78 @@ function Row({ k, v }: { k: ReactNode; v: string }) {
     <div className="flex justify-between gap-2">
       <span className="text-muted-foreground">{k}</span>
       <span className="font-mono">{v}</span>
+    </div>
+  );
+}
+
+// "Top 10 zonas" legend — same panel style as the heat-map stats/rebound
+// contest panels above (rounded-md border p-3 text-xs bg-muted/30).
+function Top10ZonasPanel({
+  counts,
+  mismatches,
+  rimZoomed,
+  onToggleZoom,
+  onDownloadCsv,
+  onDownloadXlsx,
+}: {
+  counts: ZoneCounts[];
+  mismatches: CountMismatch[];
+  rimZoomed: boolean;
+  onToggleZoom: () => void;
+  onDownloadCsv: () => void;
+  onDownloadXlsx: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-border p-3 text-xs space-y-2 bg-muted/30">
+      <div className="font-semibold text-sm">Top 10 zonas — kur metājs trāpa stīpai un kur uzbrucēji noķer bumbu</div>
+
+      <div className="space-y-1">
+        {TOP10_ZONES.map((zone, i) => {
+          const offensePercent = (counts[i].offense / SHOTS_PER_ZONE) * 100;
+          return (
+            <div key={i} className="flex items-center gap-2">
+              <span className="inline-block h-3 w-3 shrink-0 rounded-full border border-black/20" style={{ backgroundColor: zone.color }} />
+              <span className="w-6 shrink-0 font-mono">{i + 1}.</span>
+              <span className="flex-1 font-mono text-[11px] leading-tight">
+                {(zone.angleDeg - ANGLE_ERROR_DEG).toFixed(1)}–{(zone.angleDeg + ANGLE_ERROR_DEG).toFixed(1)}° ·{" "}
+                {(zone.aimDeg - AIM_ERROR_DEG).toFixed(1)}–{(zone.aimDeg + AIM_ERROR_DEG).toFixed(1)}° ·{" "}
+                {(zone.speedMps - SPEED_ERROR_MPS).toFixed(2)}–{(zone.speedMps + SPEED_ERROR_MPS).toFixed(2)} m/s
+              </span>
+              <span className="font-mono shrink-0">{offensePercent.toFixed(1)}%</span>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="text-muted-foreground pt-1 border-t border-border">
+        Punkti uz stīpas = kur bumba pirmo reizi pieskaras stīpai. Punkti uz laukuma = kur uzbrucēji noķer bumbu.
+        Rādīti tikai metieni, kuros bumbu ieguva uzbrucēji. Zona = centrs ± metāja kļūda; 125 metieni zonā.
+      </div>
+
+      {mismatches.length > 0 && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 p-2 text-destructive space-y-0.5">
+          <div className="font-semibold">Neatbilstība sagaidāmajiem skaitļiem:</div>
+          {mismatches.map((m, i) => (
+            <div key={i} className="font-mono text-[11px]">
+              Zone {m.zoneIndex + 1} · {m.outcome}: expected {m.expected}, got {m.got}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <Button variant="outline" size="sm" className="h-9 flex-1 lg:h-8" onClick={onToggleZoom}>
+          {rimZoomed ? "Rādīt laukumu" : "Tuvināt stīpu"}
+        </Button>
+      </div>
+      <div className="flex gap-2">
+        <Button variant="outline" size="sm" className="h-9 flex-1 lg:h-8" onClick={onDownloadCsv}>
+          Lejupielādēt CSV
+        </Button>
+        <Button variant="outline" size="sm" className="h-9 flex-1 lg:h-8" onClick={onDownloadXlsx}>
+          Lejupielādēt Excel
+        </Button>
+      </div>
     </div>
   );
 }

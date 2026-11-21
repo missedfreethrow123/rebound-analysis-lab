@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyContactImpulse, releaseHeightM, resolveContestPoint, simulate, type ShotParams } from "./core";
-import { BALL_INERTIA_KGM2, BALL_MASS_KG, FLOOR_RESTITUTION, FT_LINE_Z_M } from "./constants";
+import { BALL_INERTIA_KGM2, BALL_MASS_KG, FLOOR_RESTITUTION, FT_LINE_Z_M, RIM_RADIUS_M } from "./constants";
 
 const params: ShotParams = {
   heightCm: 190,
@@ -424,5 +424,58 @@ describe("lodged (FIBA 2026 Art. 12.4 — ball lodges between ring and backboard
     expect(result.lodged).toBe(false);
     expect(result.lodgedTime).toBeNull();
     expect(result.rimContacts).toBeGreaterThan(0);
+  });
+});
+
+describe("rimBeforeFloor (FIBA 2026 Art. 44.2.3 / 31.1.1 — floor before rim is a violation)", () => {
+  it("a shot that lands under the basket and only grazes the rim on the bounce-up is NOT rimBeforeFloor", () => {
+    // (73, 0, 7.95): same shot as the lodge test above — falls short, hits
+    // the floor almost directly under the hoop first (t=1.804s), THEN on the
+    // rebound bounce touches the backboard and finally the rim (t=2.317s).
+    // The floor comes first, so this is a violation, not a valid miss, even
+    // though rimContacts > 0.
+    const result = simulate({ heightCm: 190, angleDeg: 73, aimDeg: 0, speed: 7.95, spinRps: 0 }, { recordTrajectory: false });
+    expect(result.rimBeforeFloor).toBe(false);
+    expect(result.validRimContactTime).toBeNull();
+    expect(result.rimContacts).toBeGreaterThan(0);
+    expect(result.floorTime).not.toBeNull();
+    expect(result.firstRimContactTime).not.toBeNull();
+    expect(result.firstRimContactTime!).toBeGreaterThan(result.floorTime!);
+  });
+
+  it("an ordinary rim-front miss on the first pass is rimBeforeFloor", () => {
+    const result = simulate({ heightCm: 190, angleDeg: 50, aimDeg: 0, speed: 6.78, spinRps: 0 }, { recordTrajectory: false });
+    expect(result.rimBeforeFloor).toBe(true);
+    expect(result.validRimContactTime).toBe(result.firstRimContactTime);
+  });
+
+  it("a backboard-then-rim miss (rim still before the floor) is rimBeforeFloor", () => {
+    // A prior backboard contact doesn't disqualify this — only touching the
+    // floor first does. Found by scanning angle 25-45/speed 7-10 for a
+    // backboard contact strictly before the rim contact, with the floor
+    // only reached afterward.
+    const result = simulate({ heightCm: 190, angleDeg: 25, aimDeg: 0, speed: 9.7, spinRps: 0 }, { recordTrajectory: false });
+    expect(result.backboardHit).toBe(true);
+    expect(result.firstImpactTime!).toBeLessThan(result.firstRimContactTime!);
+    expect(result.rimBeforeFloor).toBe(true);
+    expect(result.validRimContactTime).toBe(result.firstRimContactTime);
+    expect(result.floorTime!).toBeGreaterThan(result.firstRimContactTime!);
+  });
+});
+
+describe("firstRimContact (Top 10 zonas: point on the rim's own centre-line nearest the ball)", () => {
+  it("is null when the ball never touches the rim", () => {
+    // Clean swish, well short of any rim contact.
+    const result = simulate({ heightCm: 190, angleDeg: 45, aimDeg: 0, speed: 7.05, spinRps: 0 }, { recordTrajectory: false });
+    expect(result.rimContacts).toBe(0);
+    expect(result.firstRimContact).toBeNull();
+  });
+
+  it("sits exactly on the rim's centre-line circle (radius RIM_RADIUS_M) at the first contact", () => {
+    const result = simulate({ heightCm: 190, angleDeg: 50, aimDeg: 0, speed: 6.78, spinRps: 0 }, { recordTrajectory: false });
+    expect(result.rimContacts).toBeGreaterThan(0);
+    expect(result.firstRimContact).not.toBeNull();
+    const [x, z] = result.firstRimContact!;
+    expect(Math.hypot(x, z)).toBeCloseTo(RIM_RADIUS_M, 9);
   });
 });

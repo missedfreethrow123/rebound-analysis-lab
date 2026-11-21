@@ -22,10 +22,11 @@
 //      the rim, stop at contact, no sliding. The shooter does not move at
 //      all (FIBA: can't move until the ball touches the rim).
 //   2. REACTION (t >= tRim, before each player's own start time): everyone
-//      just stands still exactly where phase 1 left them — lane players for
-//      0.3s after the rim, the shooter for 0.6s (FIBA: lane players may move
-//      from ball release already passed in phase 1's own clock; what they're
-//      actually waiting out here is their own reaction time to the rim hit).
+//      just stands still exactly where phase 1 left them, for REACTION_S
+//      after the rim — lane players AND the shooter alike, no extra delay
+//      for either (FIBA: lane players may move from ball release already
+//      passed in phase 1's own clock; what they're actually waiting out
+//      here is their own reaction time to the rim hit).
 //   3. ATTACKER CHASE + SIDE-SHUFFLE, DEFENDER SYNC (t >= a player's own
 //      start time) — see below. Processed in a different order than phases
 //      1/2: every step, ALL attackers move first (PLAYERS order), THEN all
@@ -74,9 +75,9 @@
 //   - SYNC (defender's own reaction end <= t < tCatchable, this shot's first
 //     post-tRim moment the ball's height drops to <= standing-reach catch
 //     height): copy the paired attacker's delta, as above. D_3's attacker is
-//     the shooter, frozen until tRim + SHOOTER_RECOVERY_S on top of
-//     REACTION_S — so D_3 (whose own reaction already ended at tRim +
-//     REACTION_S) stands still until then too, copying a zero vector.
+//     the shooter, who now starts at the SAME tRim + REACTION_S as D_3's own
+//     reaction end — so D_3 copies a real (non-zero) delta from its very
+//     first SYNC tick, with no extra zero-vector wait beforehand.
 //   - BALL (t >= tCatchable, permanently): straight at the ball's current
 //     floor point, stop at contact — same primitive as phase 1's attackers,
 //     no sliding.
@@ -97,7 +98,7 @@
 
 import type { ShotResult } from "@/physics/core";
 import { REBOUND_CATCH_HEIGHT_M, COURT_WIDTH_M, BASELINE_TO_RIM_M, BALL_RADIUS_M } from "@/physics/constants";
-import { PLAYER_SPEED_MPS, REACTION_S, SHOOTER_RECOVERY_S, PAIRING } from "./contest";
+import { PLAYER_SPEED_MPS, REACTION_S, PAIRING } from "./contest";
 import { PLAYERS, PLAYER_RADIUS_M, type Team } from "./players";
 
 const MOVEMENT_DT_S = 0.005; // fixed step
@@ -720,18 +721,31 @@ function defenderChaseStep(cur: Vec2, ballXZ: Vec2, blockers: Vec2[]): Vec2 {
   return moveToward(cur, ballXZ, PLAYER_SPEED_MPS * MOVEMENT_DT_S, blockers);
 }
 
-function startTimeFor(playerId: string, tRim: number): number {
-  return playerId === "SHOOTER" ? tRim + REACTION_S + SHOOTER_RECOVERY_S : tRim + REACTION_S;
+// Same REACTION_S for every player now, including the shooter — no longer
+// needs playerId to branch on.
+function startTimeFor(tRim: number): number {
+  return tRim + REACTION_S;
 }
 
 export function simulateRebound(result: ShotResult, debugOut?: ShuffleDebug): MovementResult {
   if (debugOut) {
     for (const p of PLAYERS) debugOut.shuffleDistanceById[p.id] = 0;
   }
-  if (result.rimContacts === 0 || result.outcome === "made" || result.firstRimContactTime === null) {
+  // FIBA 2026 Art. 44.2.3 / 31.1.1: a ball that touches the floor before
+  // ever touching the rim is a violation, not a rebound to contest, even if
+  // rimContacts > 0 — same "no contest" result as a shot that never touched
+  // the rim at all.
+  if (result.rimContacts === 0 || result.outcome === "made" || result.firstRimContactTime === null || !result.rimBeforeFloor) {
     return emptyResult();
   }
-  const tRim = result.firstRimContactTime;
+  const tRim = result.validRimContactTime!;
+  // validRimContactTime must equal firstRimContactTime whenever rimBeforeFloor
+  // is true (see core.ts's own derivation) — verified here rather than
+  // assumed, since every start-time/catch-time calculation below is relative
+  // to tRim.
+  if (tRim !== result.firstRimContactTime) {
+    throw new Error(`simulateRebound: validRimContactTime (${tRim}) !== firstRimContactTime (${result.firstRimContactTime}) despite rimBeforeFloor`);
+  }
   const ballAt = makeBallSampler(result.trajectory);
   const tCatchable = computeTCatchable(result.trajectory, tRim);
 
@@ -811,7 +825,7 @@ export function simulateRebound(result: ShotResult, debugOut?: ShuffleDebug): Mo
       }
       for (const idx of attackerIdx) {
         const player = PLAYERS[idx];
-        const myChaseStart = startTimeFor(player.id, tRim);
+        const myChaseStart = startTimeFor(tRim);
         if (t < myChaseStart) continue; // still reacting — stay put, delta stays 0
         const ball = ballAt(t);
         const { pos: newPos, delta, shuffleDist } = attackerChaseStep(pos[idx], { x: ball.x, z: ball.z }, allOtherIdx(idx), pos);
@@ -821,7 +835,7 @@ export function simulateRebound(result: ShotResult, debugOut?: ShuffleDebug): Mo
       }
       for (const idx of defenderIdx) {
         const player = PLAYERS[idx];
-        const myChaseStart = startTimeFor(player.id, tRim); // always tRim + REACTION_S — never SHOOTER
+        const myChaseStart = startTimeFor(tRim); // tRim + REACTION_S, same for every player
         if (t < myChaseStart) continue; // still reacting — stay put
 
         if (t < tCatchable) {
